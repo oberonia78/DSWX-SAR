@@ -36,7 +36,9 @@ def _get_parser():
 
     return parser
 
+# def _deep_update(original, update):
 def _deep_update(original, update):
+
     """Update default runconfig dict with user-supplied dict.
     Parameters
     ----------
@@ -56,7 +58,8 @@ def _deep_update(original, update):
         if isinstance(val, dict):
             original[key] = _deep_update(original.get(key, {}), val)
         else:
-            original[key] = val
+            if val is not None:
+                original[key] = val
 
     # return updated original
     return original
@@ -106,7 +109,7 @@ def load_validate_yaml(yaml_path: str, workflow_name: str) -> dict:
     default_cfg_path = f'{WORKFLOW_SCRIPTS_DIR}/defaults/{schema_name}.yaml'
     with open(default_cfg_path, 'r') as f_default:
         default_cfg = parser.load(f_default)
-
+    print('default,', default_cfg)
     with open(yaml_path, 'r') as f_yaml:
         user_cfg = parser.load(f_yaml)
 
@@ -115,6 +118,7 @@ def load_validate_yaml(yaml_path: str, workflow_name: str) -> dict:
     # Validate YAML values under groups dict
     if 'groups' in default_cfg['runconfig'].keys():
         validate_group_dict(default_cfg['runconfig']['groups'])
+    print('default2,', default_cfg)
 
     return default_cfg
 
@@ -285,9 +289,15 @@ class RunConfig:
         product = sns.primary_executable.product_type
         sensor = product.split('_')[-1]
         ancillary = sns.dynamic_ancillary_file_group
+        print('-----')
+        print(ancillary)
+        print('-----')
 
         algorithm_cfg = load_validate_yaml(ancillary.algorithm_parameters,
                                            f'algorithm_parameter_{sensor.lower()}')
+        print('-----')
+        print(algorithm_cfg)
+        print('-----')
         co_pol, cross_pol, pol_list = check_polarizations(
             algorithm_cfg['runconfig']['processing']['polarizations'])
         
