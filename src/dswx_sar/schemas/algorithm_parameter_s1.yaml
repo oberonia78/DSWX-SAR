@@ -59,7 +59,7 @@ runconfig:
             extending_method: str(required=False)
             # Thresholding algorithm for initial thresholds.
             # Currently, 1) Otsu and 2) Kittler-Illingworth algorithms are available.
-            # ['otsu', 'ki']
+            # ['otsu', 'ki', 'rg']
             threshold_method: str(required=False)
             # Flag to assume the trimodal distribution.
             # If flag is false, the distribution is assumed to have bimodal distribution and
@@ -120,11 +120,19 @@ runconfig:
             line_per_block: num(min=1, required=False)
 
         masking_ancillary:
+            land_cover_darkland_list: list(required=False)
+            land_cover_darkland_extension_list: list(required=False)
             # VV and VH threshold values for dark land candidates
             co_pol_threshold: num(min=-30, max=10, required=False)
             cross_pol_threshold: num(min=-30, max=10, required=False)
             # Reference water threshold value for dark land candidates
             water_threshold: num(min=0, max=100, required=False)
+            extended_darkland: bool(required=False)
+            # Assuming the height of the water/land boundaries has low
+            # variation, the standard deviation is estimated along the boundaries
+            # and removed if the std is high. 
+            hand_variation_mask: bool(required=False)
+            hand_variation_threshold: num(min=0, max=100, required=False)
 
         refine_with_bimodality:
             number_cpu: num(required=False)
