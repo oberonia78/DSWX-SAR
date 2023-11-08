@@ -247,10 +247,12 @@ class TileSelection:
             non-water areas are present in mask.
         """
         _, water_nrow, water_ncol = water_mask.shape
-
         water_mask_sample = water_nrow * water_ncol
-        water_spatial_portion = np.nansum(water_mask, axis=(1, 2)) / \
-                                water_mask_sample
+        if water_mask_sample == 0:
+            water_spatial_portion = 0
+        else:
+            water_spatial_portion = np.nansum(water_mask, axis=(1, 2)) / \
+                                    water_mask_sample
         # If the spatial coverage of water is equal to 1 (all water) or
         # is equal to 0 (all lands), then we don't attempt to search the
         # tile showing bimodal distribution.
@@ -663,19 +665,36 @@ def compute_ki_threshold(
     intensity_counts = intensity_counts.astype(np.float64)
     intensity_bins = intensity_bins.astype(np.float64)
 
+    eps = 1e-10  # A small constant value
+
     intensity_cumsum = np.cumsum(intensity_counts)
+    # Replace zeros and negative numbers with 'eps'
+    intensity_cumsum = np.where(intensity_cumsum <= 0, 
+                                eps, intensity_cumsum)
+
+    intensity_cumsum[intensity_cumsum==0] = np.nan
     intensity_area = np.cumsum(intensity_counts * intensity_bins)
     intenisty_s = np.cumsum(intensity_counts * intensity_bins ** 2)
-    sigma_f = np.sqrt(intenisty_s / intensity_cumsum -
-                      (intensity_area / intensity_cumsum) ** 2)
+
+    var_f = intenisty_s / intensity_cumsum - \
+        (intensity_area / intensity_cumsum) ** 2
+    var_f = np.where(var_f <= 0, eps, var_f)
+    sigma_f = np.sqrt(var_f)
 
     cb = intensity_cumsum[-1] - intensity_cumsum
+    cb = np.where(cb <= 0, eps, cb)
+
     mb = intensity_area[-1] - intensity_area
     sb = intenisty_s[-1] - intenisty_s
-    sigma_b = np.sqrt(sb / cb - (mb / cb) ** 2)
+    var_b = sb / cb - (mb / cb) ** 2
+    var_b = np.where(var_b <= 0, eps, var_b)
+    sigma_b = np.sqrt(var_b)
 
     normalized_int_cumsum =  intensity_cumsum / intensity_cumsum[-1]
-
+    normalized_int_cumsum = np.where(normalized_int_cumsum >= 1, 
+                                1 - eps, normalized_int_cumsum)
+    normalized_int_cumsum = np.where(normalized_int_cumsum <= 0, 
+                                     eps, normalized_int_cumsum)
     prob_array = \
         normalized_int_cumsum * np.log(sigma_f) + \
         (1 - normalized_int_cumsum) * np.log(sigma_b) - \
@@ -739,9 +758,9 @@ def determine_threshold(
         mode value of gaussian distribution of water body
     """
     if max_intensity_histogram == -1000:
-        max_intensity_histogram = np.nanpercentile(intensity, 90)
+        max_intensity_histogram = np.nanpercentile(intensity, 95)
     if min_intensity_histogram == -1000:
-        min_intensity_histogram = np.nanpercentile(intensity, 10)
+        min_intensity_histogram = np.nanpercentile(intensity, 5)
     numstep = int((max_intensity_histogram - min_intensity_histogram) / step_histogram)
     if numstep < 100:
         step_histogram0 = step_histogram
@@ -804,9 +823,6 @@ def determine_threshold(
         # peak for lower distribution
         lowmaxind_cands, _ = find_peaks(intensity_counts[0:idx_threshold+1], distance=5)
         if not lowmaxind_cands.any():
-            print(idx_threshold)
-            print(intensity_counts)
-            print(intensity_counts[: idx_threshold])
             lowmaxind_cands = np.array([np.nanargmax(intensity_counts[: idx_threshold+1])])
 
         intensity_counts_cand = intensity_counts[lowmaxind_cands]
@@ -1728,7 +1744,7 @@ def run(cfg):
     valid_pixel_number = np.sum(intensity_whole[0, :, :] > 0)
 
     water_portion = water_pixel_number / valid_pixel_number
-    print(f'water spatial coverage : {water_portion} ')    
+    logger.info(f'water spatial coverage : {water_portion} ')    
     thres_max = np.empty([band_number])
     threshold_iteration = number_iterations
     initial_water_set = np.ones([height, width, len(pol_list)])
@@ -1795,7 +1811,6 @@ def run(cfg):
             # Parallel processing
             # -1 means using all processors
             n_jobs = number_workers
-
             results = Parallel(n_jobs=n_jobs)(
                 delayed(process_block)(ii, jj,
                                     n_rows_block, n_cols_block,
