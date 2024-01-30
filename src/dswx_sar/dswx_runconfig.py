@@ -259,7 +259,7 @@ def check_polarizations(pol_list, input_dir_list):
 
     # Find the common polarizations between requests and files.
     proc_pol_list = list(set(proc_pol_list) & set(found_pol))
-
+    print(found_pol)
     if not proc_pol_list:
         err_str = f'No RTC files found with requested polarizations {pol_list}'
         logger.error(err_str)
