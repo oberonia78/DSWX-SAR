@@ -14,6 +14,7 @@ from scipy import ndimage, stats
 from scipy.optimize import curve_fit
 from skimage.filters import (threshold_otsu,
                              threshold_multiotsu)
+from memory_profiler import profile
 
 from dswx_sar import (dswx_sar_util,
                       generate_log,
@@ -769,7 +770,7 @@ def process_bright_water_component(args):
 
     return bt_value, ad_value, ind_bright_water
 
-
+@profile
 def remove_false_water_bimodality_parallel(water_mask_path,
                                            pol_list,
                                            thresholds,
@@ -826,7 +827,9 @@ def remove_false_water_bimodality_parallel(water_mask_path,
     # To minimize memory usage, the bimodality test will be
     # carried out with the block first, and entire image will be
     # used for the remained componenets.
-    lines_per_block_set = [input_lines_per_block, rows]
+    lines_per_block_set = [input_lines_per_block,
+                           input_lines_per_block*3,
+                           rows]
     data_shape = [rows, cols]
     pad_shape = (0, 0)
 
@@ -857,6 +860,7 @@ def remove_false_water_bimodality_parallel(water_mask_path,
             nb_components_water, output_water, stats_water, _ = \
                 cv2.connectedComponentsWithStats(water_mask.astype(np.uint8),
                                                  connectivity=8)
+            print('testaa', np.shape(output_water), output_water.dtype)
             nb_components_water = nb_components_water - 1
             logger.info(f'detected component number : {nb_components_water}')
 
@@ -911,8 +915,9 @@ def remove_false_water_bimodality_parallel(water_mask_path,
                 if pol in ['VV', 'VH', 'HH', 'HV']:
                     logger.info(f'removing false water using bimodality for {pol}')
                     # 1 dimensional array for bimodality values
-                    bimodality_output = np.zeros([nb_components_water])
-                    metric_output = np.zeros([nb_components_water, 5])
+                    bimodality_output = np.zeros([nb_components_water], dtype='byte')
+                    if debug_mode:
+                        metric_output = np.zeros([nb_components_water, 5])
                     check_output = np.ones([len(sizes)], dtype='byte')
                     if debug_mode:
                         ref_land_portion_output = np.zeros([nb_components_water])
@@ -942,15 +947,19 @@ def remove_false_water_bimodality_parallel(water_mask_path,
                         if debug_mode:
                             ref_land_portion_output[bimodal_ind] = ref_land_portion_output_i
                             metric_output[bimodal_ind, :] = metric_output_i
-
-                    output_water = np.array(output_water)
+                    if nb_components_water > 65535:
+                        output_water_type = 'uint32'
+                    else:
+                        output_water_type = 'uint16'
+                    output_water = np.array(output_water, dtype=output_water_type)
                     old_val = np.arange(1, nb_components_water + 1) - .1
-                    index_array_to_image = np.searchsorted(old_val, output_water)
+                    index_array_to_image = np.array(np.searchsorted(old_val, output_water),
+                                                    dtype=output_water_type)
                     bimodality_output =  np.insert(bimodality_output, 0, 0, axis=0)
                     check_output = np.insert(check_output, 0, 0, axis=0)
 
-                    bimodality_image = bimodality_output[index_array_to_image]
-                    check_image = check_output[index_array_to_image]
+                    bimodality_image = np.array(bimodality_output[index_array_to_image], dtype='byte')
+                    check_image = np.array(check_output[index_array_to_image], dtype='byte')
 
                     bimodality_set.append(bimodality_image)
 
@@ -987,7 +996,7 @@ def remove_false_water_bimodality_parallel(water_mask_path,
                                 scratch_dir=outputdir)
 
             if {'HH', 'HV', 'VV', 'VH'}.intersection(set(pol_list)):
-                bimodality_total = np.squeeze(np.nansum(bimodality_set, axis=0))
+                bimodality_total = np.array(np.nansum(bimodality_set, axis=0), dtype='int8')
                 # 0 value in output_water indicates the non-water
                 bimodality_total[output_water==0] = False
             else:
@@ -1008,7 +1017,7 @@ def remove_false_water_bimodality_parallel(water_mask_path,
             # 'check_remove_false_water' has 1 value for unprocessed components
             # due to its touching the boundaries and has 0 value for processed components.
             check_remove_false_water_path = os.path.join(
-                outputdir, f'check_remove_false_water_{"_".join(pol_list)}.tif')
+                outputdir, f'check_remove_false_water_{"_".join(pol_list)}_{block_iter}.tif')
             dswx_sar_util.write_raster_block(
                 check_remove_false_water_path,
                 check_image,
@@ -1031,7 +1040,7 @@ def remove_false_water_bimodality_parallel(water_mask_path,
         )
         dswx_sar_util.merge_binary_layers(
             layer_list=remove_false_water_path_set,
-            value_list=[1, 1],
+            value_list=[1, 1, 1],
             merged_layer_path=merged_removed_false_water_path,
             lines_per_block=input_lines_per_block,
             mode='or',
@@ -1040,11 +1049,11 @@ def remove_false_water_bimodality_parallel(water_mask_path,
     else:
         merged_removed_false_water_path = remove_false_water_path_set[0]
 
-    bimodality_total = dswx_sar_util.read_geotiff(merged_removed_false_water_path)
+    # bimodality_total = dswx_sar_util.read_geotiff(merged_removed_false_water_path)
+    return merged_removed_false_water_path
+    # return bimodality_total
 
-    return bimodality_total
-
-
+@profile
 def fill_gap_water_bimodality_parallel(
         bright_water_path,
         pol_list,
@@ -1126,7 +1135,10 @@ def fill_gap_water_bimodality_parallel(
             nb_components_water, output_water, stats_water, _ = \
                 cv2.connectedComponentsWithStats(water_mask.astype(np.uint8),
                                                  connectivity=8)
-
+            if nb_components_water > 65535:
+                output_water_type = 'uint32'
+            else:
+                output_water_type = 'uint16'
             del out_boundary, water_mask
 
             nb_components_water = nb_components_water - 1
@@ -1199,15 +1211,15 @@ def fill_gap_water_bimodality_parallel(
                     bimodality_output[result_ind] = bimodality_bright_water
                     # To avoid the duplicated jobs, the checked compoenents is recorded.
                     check_output[result_ind] = 0
-                output_water = np.array(output_water)
+                output_water = np.array(output_water, dtype=output_water_type)
 
                 old_val = np.arange(1, nb_components_water + 1) - .1
-                index_array_to_image = np.searchsorted(old_val, output_water)
+                index_array_to_image = np.array(np.searchsorted(old_val, output_water), dtype=output_water_type)
                 bimodality_output =  np.insert(bimodality_output, 0, 0, axis=0)
                 check_output = np.insert(check_output, 0, 0, axis=0)
 
-                bimodality_image = bimodality_output[index_array_to_image]
-                check_image = check_output[index_array_to_image]
+                bimodality_image = np.array(bimodality_output[index_array_to_image], dtype='byte')
+                check_image = np.array(check_output[index_array_to_image], dtype='byte')
                 bimodality_set += bimodality_image
 
             bimodal_ad_binary = bimodality_set > 0
@@ -1256,8 +1268,9 @@ def fill_gap_water_bimodality_parallel(
         cog_flag=True,
         scratch_dir=outputdir)
 
-    bimodal_ad_binary = dswx_sar_util.read_geotiff(meregd_fill_gap_layer_path)
-    return bimodal_ad_binary==1
+    # bimodal_ad_binary = dswx_sar_util.read_geotiff(meregd_fill_gap_layer_path)
+    # return bimodal_ad_binary==1
+    return meregd_fill_gap_layer_path
 
 
 def run(cfg):
@@ -1293,7 +1306,6 @@ def run(cfg):
     # read the result of landcover masindex_array_to_imageg
     water_map_tif_str =  os.path.join(outputdir,
                                       'refine_landcover_binary_{}.tif'.format(pol_str))
-    water_mask_image = dswx_sar_util.read_geotiff(water_map_tif_str)
 
     # read landcover map
     landcover_map_tif_str = os.path.join(outputdir, 'interpolated_landcover.tif')
@@ -1334,7 +1346,7 @@ def run(cfg):
     # bimodal_binary = dswx_sar_util.read_geotiff(water_map_tif_str)
     # Identify waters that have not existed and
     # remove if bimodality does not exist
-    bimodal_binary = \
+    bimodal_binary_path = \
         remove_false_water_bimodality_parallel(
             water_map_tif_str,
             pol_list=co_pol,
@@ -1347,23 +1359,33 @@ def run(cfg):
             input_dict=input_file_dict,
             minimum_pixel=minimum_pixel,
             debug_mode=processing_cfg.debug_mode,
-            number_workers=number_workers)
+            number_workers=number_workers,
+            lines_per_block=lines_per_block)
 
-    water_bindary = bimodal_binary > 0
-    bimodal_binary = None
-    del water_mask_image
+    # water_bindary = bimodal_binary > 0
+    # bimodal_binary = None
+    # del water_mask_image
 
     # Identify gaps within the water bodies and fill the gaps
     # if bimodality exists
     bright_water_path = os.path.join(
         outputdir, f"bimodality_bright_water_{pol_str}.tif")
-    dswx_sar_util.save_dswx_product(water_bindary==0,
-                  bright_water_path,
-                  geotransform=im_meta['geotransform'],
-                  projection=im_meta['projection'],
-                  description='Water classification (WTR)',
-                  scratch_dir=outputdir)
-    fill_gap_bindary = \
+    # dswx_sar_util.save_dswx_product(water_bindary==0,
+    #               bright_water_path,
+    #               geotransform=im_meta['geotransform'],
+    #               projection=im_meta['projection'],
+    #               description='Water classification (WTR)',
+    #               scratch_dir=outputdir)
+
+    dswx_sar_util.merge_binary_layers(
+        layer_list=[bimodal_binary_path],
+        value_list=[0],
+        merged_layer_path=bright_water_path,
+        lines_per_block=lines_per_block,
+        mode='or', cog_flag=True,
+        scratch_dir='.')
+
+    fill_gap_bindary_path = \
         fill_gap_water_bimodality_parallel(
             bright_water_path,
             pol_list,
@@ -1374,18 +1396,27 @@ def run(cfg):
             input_dict=input_file_dict,
             number_workers=number_workers,
             lines_per_block=lines_per_block)
-
-    water_bindary[fill_gap_bindary] = True
-    fill_gap_bindary = None
-
     water_tif_str = os.path.join(
         outputdir, f"bimodality_output_binary_{pol_str}.tif")
-    dswx_sar_util.save_dswx_product(water_bindary>0,
-                  water_tif_str,
-                  geotransform=im_meta['geotransform'],
-                  projection=im_meta['projection'],
-                  description='Water classification (WTR)',
-                  scratch_dir=outputdir)
+    dswx_sar_util.merge_binary_layers(
+        layer_list=[bimodal_binary_path, fill_gap_bindary_path],
+        value_list=[1, 1],
+        merged_layer_path=water_tif_str,
+        lines_per_block=lines_per_block,
+        mode='or', cog_flag=True,
+        scratch_dir='.')
+
+    # water_bindary[fill_gap_bindary] = True
+    # fill_gap_bindary = None
+
+    # water_tif_str = os.path.join(
+    #     outputdir, f"bimodality_output_binary_{pol_str}.tif")
+    # dswx_sar_util.save_dswx_product(water_bindary>0,
+    #               water_tif_str,
+    #               geotransform=im_meta['geotransform'],
+    #               projection=im_meta['projection'],
+    #               description='Water classification (WTR)',
+    #               scratch_dir=outputdir)
 
     t_time_end = time.time()
     t_all_elapsed = t_time_end - t_all

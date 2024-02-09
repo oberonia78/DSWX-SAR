@@ -3,6 +3,7 @@ import logging
 import mimetypes
 import os
 import time
+from memory_profiler import profile
 
 import cv2
 import numpy as np
@@ -378,7 +379,8 @@ def split_extended_water_parallel(
 
     # check if the objects have heterogeneous characteristics (bimodality)
     # If so, split the objects using multi-otsu thresholds and check bimodality.
-    results = Parallel(n_jobs=number_workers)(delayed(check_water_land_mixture)(args)
+    results = Parallel(n_jobs=number_workers)(
+        delayed(check_water_land_mixture)(args)
                                   for args in args_list)
 
     # If water need to be refined (change_flat=True), then update the water mask.
@@ -386,7 +388,7 @@ def split_extended_water_parallel(
         if change_flag:
             water_mask[coord_list[i][2] : coord_list[i][3],
                        coord_list[i][0] : coord_list[i][1]] = water_mask_subset
-
+    del results
     dswx_sar_util.save_dswx_product(
         np.array(water_mask, dtype=np.uint8),
         output_path,
@@ -508,7 +510,7 @@ def compute_spatial_coverage_from_ancillary_parallel(
     kin = np.searchsorted(old_val, label_image)
     test_output = np.insert(test_output, 0, 0, axis=0)
     mask_water_image = test_output[kin]
-    
+
     dswx_sar_util.save_dswx_product(
         mask_water_image,
         output_file_path,
@@ -571,22 +573,22 @@ def extend_land_cover(landcover_path,
 
     Parameters:
     -----------
-    landcover_path (str): 
+    landcover_path (str):
         Path to the land cover data file.
-    reference_landcover_binary (numpy.ndarray): 
+    reference_landcover_binary (numpy.ndarray):
         Binary array representing the initial land cover.
-    target_landcover (int): 
+    target_landcover (int):
         Label of the land cover type to be extended.
-    exclude_area_rg (numpy.ndarray): 
+    exclude_area_rg (numpy.ndarray):
         Array representing areas to be excluded from processing.
-    metainfo (dict): 
+    metainfo (dict):
         Metadata including geotransform and projection information.
-    scratch_dir (str): 
+    scratch_dir (str):
         Directory for saving intermediate and output files.
 
     Returns:
     --------
-    numpy.ndarray: 
+    numpy.ndarray:
         Updated binary land cover array with the extended target land cover.
     """
     mask_obj = FillMaskLandCover(landcover_path)
@@ -685,7 +687,7 @@ def hand_filter_along_boundary(
         metainfo,
         scratch_dir):
     """
-    Filters geographic data along boundaries based on HAND model and 
+    Filters geographic data along boundaries based on HAND model and
     standard deviation thresholds.
 
     Parameters:
@@ -716,10 +718,13 @@ def hand_filter_along_boundary(
     coord_lists, sizes, output_water = \
         extract_bbox_with_buffer(target_area, 10)
     nb_components_water = len(sizes)
-    height_array = np.zeros(nb_components_water)
+
     hand_filtered_binary = np.zeros(target_area.shape, dtype='byte')
     hand_std_image = np.zeros(target_area.shape, dtype='float32')
-    
+
+    if debug_mode:
+        height_array = np.zeros(nb_components_water)
+
     for ind, coord_list in enumerate(coord_lists):
         sub_x_start, sub_x_end, sub_y_start, sub_y_end = coord_list
         sub_win_x = int(sub_x_end - sub_x_start)
@@ -737,11 +742,13 @@ def hand_filter_along_boundary(
         hand_line_data, hand_image_data = \
             extract_values_using_boundary(water_boundary, sub_hand)
         hand_std = np.nanstd(hand_line_data)
-        height_array[ind] = np.nanstd(hand_line_data)
+
+        if debug_mode:
+            height_array[ind] = np.nanstd(hand_line_data)
 
         hand_std_image[sub_y_start:sub_y_end,
                        sub_x_start:sub_x_end] += hand_image_data
-    
+
         if hand_std > height_std_threshold:
             final_binary = np.zeros(sub_hand.shape, dtype='byte')
             area_median = np.median(hand_line_data)
@@ -771,8 +778,11 @@ def hand_filter_along_boundary(
     output_water = np.array(output_water)
     old_val = np.arange(1, nb_components_water + 1) - .1
     index_array_to_image = np.searchsorted(old_val, output_water)
-    height_array =  np.insert(height_array, 0, 0, axis=0)
-    height_std_raster = height_array[index_array_to_image]
+    if debug_mode:
+        height_array =  np.insert(height_array, 0, 0, axis=0)
+        height_std_raster = np.array(height_array[index_array_to_image],
+                                     dtype='float32')
+    print('landcover', target_area.dtype)
     target_area[hand_filtered_binary == 0] = 0
 
     dswx_sar_util.save_dswx_product(
@@ -898,7 +908,7 @@ def get_darkland_from_intensity_ancillary(
             projection=band_meta['projection'],
             datatype='byte')
 
-
+@profile
 def run(cfg):
     '''
     Remove the false water which have low backscattering based on the
@@ -911,7 +921,7 @@ def run(cfg):
     processing_cfg = cfg.groups.processing
     pol_list = copy.deepcopy(processing_cfg.polarizations)
     pol_options = processing_cfg.polarimetric_option
-    
+
     if pol_options is not None:
         pol_list += pol_options
 
@@ -958,9 +968,10 @@ def run(cfg):
     mask_obj = FillMaskLandCover(landcover_path)
     mask_excluded_landcover = mask_obj.get_mask(
         mask_label=landcover_masking_list)
-    
+    del mask_obj
+
     # If `extended_landcover_flag`` is enabled, additional landcovers
-    # spatially connected with `mask_excluded_landcover` are added. 
+    # spatially connected with `mask_excluded_landcover` are added.
     if extended_landcover_flag:
         logger.info('Extending landcover enabled.')
         rg_excluded_area = (interp_wbd>dry_water_area_threshold)
@@ -1014,12 +1025,15 @@ def run(cfg):
     # If so, the code calculates a threshold and checks the bimodality
     # for each split area.
     input_map = np.where(water_map == 1, 1, 0)
+    del water_map
+
     dswx_sar_util.save_dswx_product(
         input_map,
         os.path.join(outputdir, 'input_image_test.tif'),
         geotransform=water_meta['geotransform'],
         projection=water_meta['projection'],
         scratch_dir=outputdir)
+    del input_map
 
     input_file_dict = {'intensity': filt_im_str,
                        'landcover': landcover_path,
@@ -1034,17 +1048,17 @@ def run(cfg):
         outputdir=outputdir,
         input_dict=input_file_dict,
         number_workers=number_workers)
-    
+
     # 4) re-define false water candidate estimated from 'split_extended_water_parallel'
     # by considering the spatial coverage with the ancillary files
     false_water_candidate_path = os.path.join(
         outputdir,'intermediate_false_water_candidate.tif')
     dswx_sar_util.merge_binary_layers(
         layer_list=[split_mask_water_path,
-                    water_map_tif_str], 
-        value_list=[0, 1], 
-        merged_layer_path=false_water_candidate_path, 
-        lines_per_block=lines_per_block, 
+                    water_map_tif_str],
+        value_list=[0, 1],
+        merged_layer_path=false_water_candidate_path,
+        lines_per_block=lines_per_block,
         mode='and',
         cog_flag=True,
         scratch_dir=outputdir)
@@ -1075,10 +1089,10 @@ def run(cfg):
     dswx_sar_util.merge_binary_layers(
         layer_list=[adjacent_false_positive_bindary_path,
                     darkland_cand_path,
-                    water_map_tif_str], 
-        value_list=[0, 0, 1], 
-        merged_layer_path=darkland_removed_path, 
-        lines_per_block=lines_per_block, 
+                    water_map_tif_str],
+        value_list=[0, 0, 1],
+        merged_layer_path=darkland_removed_path,
+        lines_per_block=lines_per_block,
         mode='and',
         cog_flag=True,
         scratch_dir=outputdir)

@@ -112,7 +112,7 @@ def smf(values, minv, maxv):
     # to avoid zero-division warnings.
     if isinstance(minv, np.ndarray):
         diff = maxv - minv
-        number_strange = np.nansum(diff <= 0)
+        number_strange = np.nansum(diff < 0)
         if number_strange > 0:
             logger.info(f'{number_strange} pixels have minimum values' \
                         'larger than maximum values')

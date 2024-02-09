@@ -4,9 +4,11 @@ import logging
 import os
 import time
 
+from multiprocessing import shared_memory
 import numpy as np
 from scipy import ndimage
 from joblib import Parallel, delayed
+import gc  # Garbage collection module
 
 from dswx_sar import (dswx_sar_util,
                       generate_log)
@@ -196,7 +198,10 @@ def process_region_growing_block(block_param,
 
     # replace fuzzy values with 1 for the pixels included by region growing
     data_block[region_grow_sub == 1] = 1
-
+    del region_grow_sub
+    if exclude_block is not None:
+        del exclude_block
+    gc.collect()
     return block_param, data_block
 
 
@@ -238,13 +243,21 @@ def run_parallel_region_growing(input_tif_path,
     data_width = meta_dict['width']
     data_shape = [data_length, data_width]
 
+    num_available_cpu = os.cpu_count()
     # Process fast region-growing with blocks
     # In each iteration, the block size will increase to cover
     # more areas to accelerate processing in challenging
     # areas after the initial iteration
-    lines_per_block_list = [lines_per_block,
-                            2*lines_per_block,
-                            3*lines_per_block]
+    # Dynamically compute lines_per_block_list
+    lines_per_block_list = [lines_per_block]
+    multiplier = 2
+    while True:
+        next_lines_per_block = lines_per_block * multiplier
+        if next_lines_per_block >= data_length or multiplier == 6:
+            break  # Stop if the next block size exceeds or is equal to the length of the image
+        lines_per_block_list.append(next_lines_per_block)
+        multiplier += 1
+
     num_loop = len(lines_per_block_list)
 
     for loopind, lines_per_block_loop in enumerate(lines_per_block_list):
@@ -259,8 +272,11 @@ def run_parallel_region_growing(input_tif_path,
             data_shape,
             pad_shape)
 
+        num_block = int(np.ceil(data_length / lines_per_block_loop))
+        use_cpu = min(num_available_cpu, num_block)
+
         # run region-growing for blocks in parallel
-        result = Parallel(n_jobs=-1)(delayed(process_region_growing_block)(
+        result = Parallel(n_jobs=use_cpu)(delayed(process_region_growing_block)(
             block_param,
             loopind,
             base_dir,
@@ -297,6 +313,8 @@ def run_parallel_region_growing(input_tif_path,
                     datatype='float32',
                     cog_flag=True,
                     scratch_dir=base_dir)
+        del result, region_grow_block
+        gc.collect()  # Invoke garbage collector
 
 
 def run(cfg):
@@ -350,6 +368,7 @@ def run(cfg):
     # replace the fuzzy values with 1 for the pixels
     # where the region-growing already applied
     fuzzy_map[temp_rg == 1] = 1
+    del temp_rg
 
     # Run region-growing again for entire image
     region_grow_map = region_growing(
