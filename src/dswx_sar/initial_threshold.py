@@ -642,6 +642,12 @@ def gauss(array, mu, sigma, amplitude):
     return amplitude * np.exp(-(array - mu)**2 / 2 / sigma**2)
 
 
+
+def gauss_area(sigma, amplitude):
+    """Compute the area under a Gaussian distribution with given parameters."""
+    return amplitude * np.sqrt(2 * np.pi) * sigma
+
+
 def bimodal(array, mu1, sigma1, amplitude1,
             mu2, sigma2, amplitude2):
     """Generate bimodal gaussian distribution with given means and stds
@@ -962,13 +968,7 @@ def determine_threshold(
             params, _ = curve_fit(trimodal,
                                   intensity_bins,
                                   intensity_counts,
-                                  expected,
-                                  bounds=((-35, 0, 0.01,
-                                           -35, 0, 0.01,
-                                           -35, 0, 0.01),
-                                           (5, 5, 0.95,
-                                            5, 5, 0.95,
-                                            5, 5, 0.95)))
+                                  expected,)
 
             # re-sort the order of estimated modes using amplitudes
             first_setind = 0
@@ -985,7 +985,13 @@ def determine_threshold(
             tri_first_mode = params[first_setind:first_setind+3]
             tri_second_mode = params[second_setind:second_setind+3]
             tri_third_mode = params[third_setind:third_setind+3]
-
+            
+            tri_first_mode_area = gauss_area(tri_first_mode[1], tri_first_mode[2])
+            tri_second_mode_area = gauss_area(tri_second_mode[1], tri_second_mode[2])
+            tri_third_mode_area = gauss_area(tri_third_mode[1], tri_third_mode[2])
+            tri_large_area = max[tri_first_mode_area, 
+                                 tri_second_mode_area,
+                                 tri_third_mode_area]
             simul_second_sum = np.sum(simul_second)
             if simul_second_sum == 0:
                 simul_second_sum = negligible_value
@@ -1009,6 +1015,13 @@ def determine_threshold(
                 tri_second_mode[2] / large_amp > 0.08 and \
                 tri_third_mode[2] / large_amp > 0.08
 
+            area_bool = False
+            if (tri_first_mode_area / tri_large_area >= 0.1) and \
+                (tri_second_mode_area / tri_large_area > 0.1) and \
+                (tri_third_mode_area / tri_large_area > 0.1):
+                area_bool = True
+
+
             if (np.abs(tri_first_mode[0] - tri_second_mode[0]) > 1) or \
                (np.abs(tri_first_mode[1] - tri_second_mode[1]) > 1.5):
                 first_second_dist_bool = True
@@ -1023,7 +1036,8 @@ def determine_threshold(
                 third_second_dist_bool = False
 
             if tri_ratio_bool and third_second_dist_bool and \
-               first_second_dist_bool and tri_first_mode[0] > -32:
+               first_second_dist_bool and tri_first_mode[0] > -32 and\
+                area_bool:
                 tri_optimization = True
 
             else:
@@ -1337,7 +1351,7 @@ def fill_threshold_with_gdal(threshold_array,
 
             csv_file_str = os.path.join(outputdir,
                                         f"data_thres_{pol}_{filename}.csv")
-            np.savetxt(csv_file_str, data_valid.transpose(), delimiter=",")
+            np.savetxt(csv_file_str, data_valid.transpose(), delimiter=",", fmt='%10.7f')
 
             vrt_file = os.path.join(outputdir,
                                     f"data_thres_{pol}_{filename}.vrt")
