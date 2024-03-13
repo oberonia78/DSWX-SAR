@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import logging
+import os
 import time
 
 from dswx_sar import (detect_inundated_vegetation,
@@ -83,6 +84,10 @@ def dswx_s1_workflow(cfg):
     processing_cfg.polarizations = pol_list
     # save product as mgrs tiles.
     save_mgrs_tiles.run(cfg)
+
+    # compute accuracy
+    #cmdline = f'compute_acc_with_hls.py -i {cfg.groups.product_path_group.sas_output_path} -o {cfg.groups.product_path_group.sas_output_path}'
+    #os.system(cmdline)
 
     t_time_end = time.time()
     logger.info(f'total processing time: {t_time_end - t_all} sec')

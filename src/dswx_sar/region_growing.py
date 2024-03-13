@@ -8,6 +8,7 @@ import time
 import numpy as np
 from scipy import ndimage
 from joblib import Parallel, delayed
+import gc  # Garbage collection module
 
 from dswx_sar import (dswx_sar_util,
                       generate_log)
@@ -252,6 +253,7 @@ def run_parallel_region_growing(input_tif_path,
     multiplier = 2
     while next_lines_per_block < data_length and multiplier < 6:
         next_lines_per_block = lines_per_block * multiplier
+
         lines_per_block_list.append(next_lines_per_block)
         multiplier += 1
 
@@ -284,6 +286,7 @@ def run_parallel_region_growing(input_tif_path,
                 initial_threshold,
                 relaxed_threshold,
                 maxiter)
+
             for block_param in block_params)
 
         for block_param, region_grow_block in result:
