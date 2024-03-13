@@ -32,7 +32,8 @@ class BimodalityMetrics:
                  hist_min=-32,
                  hist_max=-5,
                  hist_num=200,
-                 gauss_dist_thres_bound=[-18, 0]):
+                 gauss_dist_thres_bound=None):
+
         """Initialized BimodalityMetrics Class with intensity array
 
         Parameters
@@ -49,6 +50,8 @@ class BimodalityMetrics:
             bound for threshold to fit the bimodal
             distribution
         """
+        if gauss_dist_thres_bound is None:
+            gauss_dist_thres_bound = [-18, 0]
         self.intensity_array = intensity_array.flatten()
         int_db = 10 * np.log10(self.intensity_array)
         self.int_db = int_db
@@ -66,77 +69,94 @@ class BimodalityMetrics:
         # remove invalid values
         mask = (np.isnan(int_db)) | (np.isinf(int_db)) | (np.isinf(-int_db))
         int_db = int_db[np.invert(mask)]
+        if len(int_db) >= 3:
+            self.enough_number = True
+            # Threshold for two Gaussian fitting
+            self.threshold_global_otsu = threshold_otsu(int_db)
 
-        # Threshold for two Gaussian fitting
-        self.threshold_global_otsu = threshold_otsu(int_db)
+            # If the threshold is too low,
+            # then apply multi-threshold algorithm
+            if self.threshold_global_otsu < gauss_dist_thres_bound[0]:
+                try:
+                    multithreshold_global_otsu = \
+                        threshold_multiotsu(int_db)
 
-        # If the threshold is too low,
-        # then apply multi-threshold algorithm
-        if self.threshold_global_otsu < gauss_dist_thres_bound[0]:
-            try:
-                multithreshold_global_otsu = threshold_multiotsu(int_db)
-                if any(multithreshold_global_otsu >= gauss_dist_thres_bound[0]):
-                    self.threshold_global_otsu_ind = \
-                        np.where((multithreshold_global_otsu >
-                                gauss_dist_thres_bound[0]) &
-                                (multithreshold_global_otsu <
-                                gauss_dist_thres_bound[1]))
+                    if any(multithreshold_global_otsu >=
+                           gauss_dist_thres_bound[0]):
+                        self.threshold_global_otsu_ind = \
+                            np.where((multithreshold_global_otsu >
+                                      gauss_dist_thres_bound[0]) &
+                                     (multithreshold_global_otsu <
+                                      gauss_dist_thres_bound[1]))
+                        if self.threshold_global_otsu_ind[0]:
+                            self.threshold_global_otsu = \
+                                multithreshold_global_otsu[
+                                    self.threshold_global_otsu_ind[0][0]]
 
-                    if self.threshold_global_otsu_ind[0]:
-                        self.threshold_global_otsu = \
-                            multithreshold_global_otsu[
-                                self.threshold_global_otsu_ind[0][0]]
-            except ValueError:
-                logger.info('multiotsu method failed.')
+                except ValueError:
+                    logger.info('multiotsu method failed.')
 
-        self.prob = self.counts * self.binstep
+            self.prob = self.counts * self.binstep
 
-        # Initial values for curve fitting using threshold computed above
-        left_sample = int_db[int_db < self.threshold_global_otsu]
-        right_sample = int_db[int_db > self.threshold_global_otsu]
-        if len(left_sample) > 0 and len(right_sample) > 0:
-            mean_lt = np.nanmean(left_sample)
-            mean_gt = np.nanmean(right_sample)
-            std_lt = np.std(left_sample)
-            std_gt = np.std(right_sample)
-        else:
-            mean_lt = self.threshold_global_otsu - 1
-            mean_gt = self.threshold_global_otsu + 1
-            std_lt, std_gt = 1, 1
+            # Initial values for curve fitting using threshold computed above
+            left_sample = int_db[int_db < self.threshold_global_otsu]
+            right_sample = int_db[int_db > self.threshold_global_otsu]
+            if len(left_sample) > 0 and len(right_sample) > 0:
+                mean_lt = np.nanmean(left_sample)
+                mean_gt = np.nanmean(right_sample)
+                std_lt = np.std(left_sample)
+                std_gt = np.std(right_sample)
 
-        amp_lt_ind = np.abs(self.bincenter - mean_lt).argmin()
-        amp_lt = self.prob[amp_lt_ind]
-        amp_gt_ind = np.abs(self.bincenter - mean_gt).argmin()
-        amp_gt = self.prob[amp_gt_ind]
-
-        try:
-            # starting value for curve_fit
-            # mean, std, amplitude, mean, std, amplitude
-            expected = (mean_lt, std_lt, amp_lt,
-                        mean_gt, std_gt, amp_gt)
-            params, _ = curve_fit(self.bimodal,
-                                  self.bincenter,
-                                  self.prob,
-                                  expected,
-                                  bounds=(
-                                    (-30, 1e-10, 0,
-                                    -30, 1e-10, 0),
-                                    (5, 5, 1,
-                                     5, 5, 1)))
-            if params[0] > params[3]:
-                self.second_mode = params[:3]
-                self.first_mode = params[3:]
             else:
-                self.first_mode = params[:3]
-                self.second_mode = params[3:]
-            # Left Gaussian
-            self.simul_first = self.gauss(self.bincenter, *self.first_mode)
-            self.simul_second = self.gauss(self.bincenter, *self.second_mode)
-            self.simul_all = self.simul_first + self.simul_second
-            self.optimization = True
-        except:
-            logger.info(f'Bimodal curve Fitting fails in BimodalityMetrics.')
+                mean_lt = self.threshold_global_otsu - 1
+                mean_gt = self.threshold_global_otsu + 1
+                std_lt, std_gt = 1, 1
+
+            amp_lt_ind = np.abs(self.bincenter - mean_lt).argmin()
+            amp_lt = self.prob[amp_lt_ind]
+            amp_gt_ind = np.abs(self.bincenter - mean_gt).argmin()
+            amp_gt = self.prob[amp_gt_ind]
+
+            try:
+                # starting value for curve_fit
+                # mean, std, amplitude, mean, std, amplitude
+                expected = (mean_lt, std_lt, amp_lt,
+                            mean_gt, std_gt, amp_gt)
+                params, _ = curve_fit(self.bimodal,
+                                      self.bincenter,
+                                      self.prob,
+                                      expected,
+                                      bounds=(
+                                        (-30, 1e-10, 0,
+                                         -30, 1e-10, 0),
+                                        (5, 5, 1,
+                                         5, 5, 1)))
+                if params[0] > params[3]:
+                    self.second_mode = params[:3]
+                    self.first_mode = params[3:]
+                else:
+                    self.first_mode = params[:3]
+                    self.second_mode = params[3:]
+                # Left Gaussian
+                self.simul_first = self.gauss(self.bincenter,
+                                              *self.first_mode)
+                self.simul_second = self.gauss(self.bincenter,
+                                               *self.second_mode)
+                self.simul_all = self.simul_first + self.simul_second
+                self.optimization = True
+
+            except ValueError:
+                logger.info('ValueError: Bimodal curve Fitting fails in '
+                            'BimodalityMetrics.')
+                self.optimization = False
+            except RuntimeError:
+                logger.info('RuntimeError: Bimodal curve Fitting fails in '
+                            'BimodalityMetrics.')
+                self.optimization = False
+        else:
             self.optimization = False
+            self.enough_number = False
+
 
     def gauss(self, array, mu, sigma, amplitude):
         """ Calculate the value of a Gaussian (normal) function.
@@ -286,8 +306,12 @@ class BimodalityMetrics:
             local_left_ind = np.argmax(self.simul_first)
             local_right_ind = np.argmax(self.simul_second)
 
-            start_ind = max(0, local_left_ind[0] - 1)
-            end_ind = min(local_right_ind[0], len(self.simul_all))
+            if self.simul_first.ndim == 1:
+                start_ind = max(0, local_left_ind - 1)
+                end_ind = min(local_right_ind, len(self.simul_all))
+            else:
+                start_ind = max(0, local_left_ind[0] - 1)
+                end_ind = min(local_right_ind[0], len(self.simul_all))
 
             local_min_ind = np.argmin(self.simul_all[start_ind:end_ind]) + \
                 start_ind
@@ -295,26 +319,33 @@ class BimodalityMetrics:
             value = self.bincenter[local_min_ind]
             cand_lte = self.bincenter <= value
             cand_gte = self.bincenter >= value
-            meanp_lte = np.nanmean(self.int_db[self.int_db <= value])
-            meanp_gte = np.nanmean(self.int_db[self.int_db >= value])
-            probp_lte = np.nansum(self.counts[cand_lte]) * self.binstep
-            probp_gte = np.nansum(self.counts[cand_gte]) * self.binstep
 
-            var_all = np.nanvar(self.int_db)
-            sigma_b = probp_lte * probp_gte * \
-                ((meanp_lte - meanp_gte) ** 2) / var_all
-        except:
+            # if values are one of the bounds, int_db[slice] yields
+            # empty array. we cannot compute sigma_b in this way.
+            if self.int_db[self.int_db <= value].size > 0 and \
+               self.int_db[self.int_db >= value].size > 0:
+                meanp_lte = np.nanmean(self.int_db[self.int_db <= value])
+                meanp_gte = np.nanmean(self.int_db[self.int_db >= value])
+                probp_lte = np.nansum(self.counts[cand_lte]) * self.binstep
+                probp_gte = np.nansum(self.counts[cand_gte]) * self.binstep
+
+                var_all = np.nanvar(self.int_db)
+                sigma_b = probp_lte * probp_gte * \
+                    ((meanp_lte - meanp_gte) ** 2) / var_all
+            else:
+                sigma_b, _ = estimate_bimodality(self.int_db)
+        except ValueError:
+
             sigma_b, _ = estimate_bimodality(self.int_db)
 
         return sigma_b
 
     def compute_metric(self,
                        ashman_flag=True,
-                       bhc_flag=True,
                        bm_flag=True,
                        surface_ratio_flag=True,
                        bc_flag=True,
-                       thresholds=[1.5, 0.97, 0.1, 0.7]):
+                       thresholds=None):
         """
         Compute the bimodality metric for the given data.
 
@@ -325,14 +356,11 @@ class BimodalityMetrics:
         Otherwise, it calculates the bimodality metric using the
         `estimate_bimodality` function.
 
-        Parameters:
+        Parameters
         ----------
         ashman_flag : bool
             Flag to indicate whether to consider
             the Ashman coefficient in the metric.
-        bhc_flag : bool
-            Flag to indicate whether to consider
-            the Bhattacharyya coefficient in the metric.
         bm_flag : bool
             Flag to indicate whether to consider
             the bimodality coefficient in the metric.
@@ -346,48 +374,52 @@ class BimodalityMetrics:
             A list containing threshold values
             for different metrics. # ashman, bhc, surface_ratio, bm
 
-        Returns:
-        ----------
+        Returns
+        -------
         bimodality_flag : bool
             A boolean value indicating whether the data satisfies
             the bimodality condition based on the
             selected metrics and thresholds.
         """
-        ashman, bhc, surface_ratio, bm_coeff, bc_coeff = \
-            (None, None, None, None, None)
+        if thresholds is None:
+            thresholds = [1.5, 0.97, 0.1, 0.7]
+        ashman, surface_ratio, bm_coeff, bc_coeff = \
+            (None, None, None, None)
         bimodality_flag = False
 
-        if self.optimization and len(self.int_db) > 4:
-            ashman, bhc, surface_ratio, bm_coeff, bc_coeff = self.get_metric()
+        if self.enough_number:
+            if self.optimization and len(self.int_db) > 4:
+                (ashman, bhc, surface_ratio,
+                 bm_coeff, bc_coeff) = self.get_metric()
 
-            # Check if the data satisfies the conditions for bimodality
-            bm_coeff_bool = bm_flag and \
-                (bm_coeff is None or bm_coeff > thresholds[3])
-            ashman_bool = ashman_flag and \
-                (ashman is None or ashman > thresholds[0])
-            bhc_bool = bhc_flag and \
-                (bhc is None or bhc > thresholds[1])
-            surface_ratio_bool = surface_ratio_flag and \
-                (surface_ratio is None or surface_ratio > thresholds[2])
-            bc_coeff_bool = bc_flag and \
-                (bc_coeff is None or bc_coeff > 5/9)
-            bimodal_metrics = (int(ashman_bool) +
-                               int(bm_coeff_bool) +
-                               int(bc_coeff_bool))
-            # If more than two metric satisficed are higher than threshold
-            # or ashman coefficient is higher than 3
-            # and surface ratio is higher than threshold
-            bool_set = [(bimodal_metrics >= 2) or (ashman > 3),
-                        surface_ratio_bool]
+                # Check if the data satisfies the conditions for bimodality
+                bm_coeff_bool = bm_flag and \
+                    (bm_coeff is None or bm_coeff > thresholds[3])
+                ashman_bool = ashman_flag and \
+                    (ashman is None or ashman > thresholds[0])
+                surface_ratio_bool = surface_ratio_flag and \
+                    (surface_ratio is None or surface_ratio > thresholds[2])
+                bc_coeff_bool = bc_flag and \
+                    (bc_coeff is None or bc_coeff > 5/9)
+                bimodal_metrics = (int(ashman_bool) +
+                                   int(bm_coeff_bool) +
+                                   int(bc_coeff_bool))
+                # If more than two metric satisficed are higher than threshold
+                # or ashman coefficient is higher than 3
+                # and surface ratio is higher than threshold
+                bool_set = [(bimodal_metrics >= 2) or
+                            (ashman > 3),
+                            surface_ratio_bool]
 
-            if all(element for element in bool_set):
-                bimodality_flag = True
-        else:
-            # If optimization fails, then apply alternative way
-            # Compute bimodality using the estimate_bimodality function
-            bt_max, ad_max = estimate_bimodality(self.int_db)
-            if (bt_max > thresholds[3]) & (ad_max > 1.5):
-                bimodality_flag = True
+                if all(element for element in bool_set):
+                    bimodality_flag = True
+            else:
+                # If optimization fails, then apply alternative way
+                # Compute bimodality using the estimate_bimodality function
+                bt_max, ad_max = estimate_bimodality(self.int_db)
+                if (bt_max > thresholds[3]) & (ad_max > 1.5):
+                    bimodality_flag = True
+
 
         return bimodality_flag
 
@@ -450,7 +482,7 @@ def estimate_bimodality(array,
                                 bins=hist_bin,
                                 density=False)
 
-    bincenter = ((bins[:-1] + bins[1:]) /2)
+    bincenter = (bins[:-1] + bins[1:]) / 2
 
     # smooth histogram by appling gaussian filter
     counts_smooth = scipy.signal.convolve(counts,
@@ -533,33 +565,38 @@ def process_dark_land_component(args):
     for the component based on certain conditions and returns the
     results.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     args : tuple
         A tuple containing the following elements:
-            - i (int): The index of the dark land component.
-            - sizes (int): The size of the dark land component
-              in pixels.
-            - bounds (tuple): The bounding box of the component
-              (row, col, width, height).
-            - ref_land_str (str): File path to the raster dataset
-              representing land areas.
-            - landcover_str (str): File path to the landcover
-              raster dataset.
-            - pol_ind (int): Index of the polarization band to process.
-            - bands_str (str): File path to the intensity bands
-              raster dataset.
-            - water_label_str (str): File path to the labeled water
-              elements raster dataset.
-            - thresholds (list): List of the thresholds to
-              determine bimiodality.
+            - i: int
+                The index of the dark land component.
+            - sizes: int
+                The size of the dark land component in pixels.
+            - bounds: tuple
+                The bounding box of the component
+                (row, col, width, height).
+            - ref_land_block: np.ndarray
+                numpy array to the raster dataset representing land areas.
+            - pol_ind: int
+                Index of the polarization band to process.
+            - bands_block: np.ndarray
+                numpy array of the intensity bands raster dataset.
+            - water_label_block: np.ndarray
+                numpy array of the labeled water elements raster dataset.
+            - thresholds: list
+                List of the thresholds to determine bimiodality.
             - minimum_pixel (int): minimum number of pixels to accept
               as water bodies.
-            - debug_mode (bool): Flag indicating whether to enable
-              debug mode.
+            - debug_mode: boolean
+                Flag indicating whether to enable debug mode.
+            - startline: int
+                start line of the block
+            - blocksize: int
+                block size of the data
 
-    Returns:
-    --------
+    Returns
+    -------
     tuple:
         A tuple containing the results for the dark land component:
             - i (int): The index of the dark land component.
@@ -572,7 +609,7 @@ def process_dark_land_component(args):
               containing metric output
               values if debug_mode is True, otherwise, it contains zeros.
     """
-    (i, sizes, bounds, ref_land_block, landcover_block,
+    (i, sizes, bounds, ref_land_block,
      pol_ind, bands_block, water_label_block, thresholds,
      minimum_pixel, debug_mode, startline, blocksize) = args
 
@@ -583,20 +620,17 @@ def process_dark_land_component(args):
     width = bounds[1] - bounds[0]
     height = bounds[3] - bounds[2]
 
-    # # Assign the datasets to their respective variables
+    # Assign the datasets to their respective variables
     # landcover, bands, ref_land, water_label = raster_datasets
     if bands_block.ndim == 2:
-        bands_block = np.reshape(bands_block, [1,
-                                               bands_block.shape[0],
-                                               bands_block.shape[1]])
+        bands_block = np.expand_dims(bands_block, axis=0)
+
     bands = bands_block[pol_ind,
                         y_off-startline:y_off+height-startline,
                         x_off:x_off+width]
     ref_land = ref_land_block[y_off-startline:y_off+height-startline,
                               x_off:x_off+width]
-    landcover = landcover_block[
-        y_off-startline:y_off+height-startline,
-        x_off:x_off+width]
+
     water_label = water_label_block[
         y_off-startline:y_off+height-startline,
         x_off:x_off+width]
@@ -684,26 +718,37 @@ def process_bright_water_component(args):
     intensity bands, and labeled water elements. It estimates bimodality
     metrics for the component based on certain conditions and thresholds.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     args : tuple
     A tuple containing the following elements:
-        - ind_bright_water (int): The index of the bright water component.
-        - sizes (int): The size of the bright water component in pixels.
-        - bounds (tuple): The bounding box of the component
-          (row, col, width, height).
-        - output_water_str (str): File path to the labeled water elements
-          raster dataset.
-        - landcover_str (str): File path to the landcover raster dataset.
-        - bands_str (str): File path to the intensity bands raster dataset.
-        - ref_land_str (str): File path to the raster dataset representing
-          land areas.
-        - pol_ind (int): Index of the polarization band to process.
-        - threshold (tuple): A tuple containing two threshold values for Bt
-          and Ad metrics.
+        - ind_bright_water: int
+            The index of the bright water component.
+        - sizes: int
+            The size of the bright water component in pixels.
+        - bounds: tuple
+            The bounding box of the component
+            (row, col, width, height).
+        - output_water_block: np.ndarray
+            numpy array of the labeled water elements raster dataset.
+        - landcover_block: np.ndarray
+            numpy array of the landcover raster dataset.
+        - bands_block: np.ndarray
+            numpy array of the intensity bands raster dataset.
+        - ref_land_block: np.ndarray
+            numpy array to the raster dataset representing land areas.
+        - pol_ind: int
+            Index of the polarization band to process.
+        - threshold: tuple
+            A tuple containing two threshold values for Bt
+            and Ad metrics.
+        - startline: int
+            start line of the block
+        - blocksize: int
+            block size of the data
 
-    Returns:
-    ---------
+    Returns
+    -------
     tuple
         A tuple containing the following results
         for the bright water component
@@ -711,33 +756,30 @@ def process_bright_water_component(args):
             - ADmax (float): The estimated AD metric value.
             - ind_bright_water (int): The index of the bright water component.
     """
-    ind_bright_water, sizes, bounds, output_water_block, landcover_block, \
-        bands_block, ref_land_block, pol_ind, threshold, startline, blocksize = args
+    (ind_bright_water, sizes, bounds, output_water_block,
+     landcover_block, bands_block, ref_land_block, pol_ind,
+     threshold, startline, blocksize) = args
 
     # bounding box covering the bright waters
     bounds[3] = min(bounds[3], blocksize + startline)
     bounds[2] = max(bounds[2], startline)
-    x_off, _, y_off, _ = bounds
+
     width = bounds[1] - bounds[0]
     height = bounds[3] - bounds[2]
 
     if bands_block.ndim == 2:
-        bands_block = np.reshape(bands_block, [1,
-                                               bands_block.shape[0],
-                                               bands_block.shape[1]])
+        bands_block = np.expand_dims(bands_block, axis=0)
 
-    bands = bands_block[pol_ind,
-                        y_off-startline:y_off+height-startline,
-                        x_off:x_off+width]
+    # Assume that blocks in block processing are split along
+    # the y-axis only.
+    slice_x = slice(bounds[0], bounds[0] + width)
+    slice_y = slice(bounds[2] - startline, bounds[2] - startline + height)
 
-    ref_land = ref_land_block[y_off-startline:y_off+height-startline,
-                              x_off:x_off+width]
-    landcover = landcover_block[
-        y_off-startline:y_off+height-startline,
-        x_off:x_off+width]
-    output_water = output_water_block[
-        y_off-startline:y_off+height-startline,
-        x_off:x_off+width]
+    bands = bands_block[pol_ind, slice_y, slice_x]
+    ref_land = ref_land_block[slice_y, slice_x]
+    landcover = landcover_block[slice_y, slice_x]
+    output_water = output_water_block[slice_y, slice_x]
+
 
     # Find areas where is within entire image boundary and
     # water areas (output_water == 0)
@@ -749,10 +791,8 @@ def process_bright_water_component(args):
     mask_water = output_water == ind_bright_water + 1
 
     landcover_water_target = landcover_water[mask_water]
-    if len(landcover_water_target) > 0:
-        landcover_portion = np.nanmean(landcover_water_target)
-    else:
-        landcover_portion = 0
+    landcover_portion = np.mean(landcover_water_target) \
+        if landcover_water_target.size > 0 else 0
 
     # Initially, value is set to be higher than threshold
     ad_value = threshold[1] + 0.5
@@ -790,10 +830,11 @@ def remove_false_water_bimodality_parallel(water_mask_path,
     This function identifies and processes areas of water and adjacent lands
     to verify and refine the accuracy of water detection in an image.
     This function should be used only for ['VV', 'VH', 'HH', 'HV'].
-    In the case that the other polarization is given, then return input as it is.
+    In the case that the other polarization is given, then return input
+    as it is.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     water_mask_path: str
         Path of binary mask file indicating water areas in the image.
     pol_list: list
@@ -819,8 +860,8 @@ def remove_false_water_bimodality_parallel(water_mask_path,
     lines_per_block: int
         lines of the block processing
 
-    Returns:
-    --------
+    Returns
+    -------
     bimodality_total: numpy.ndarray
         An image indicating the bimodality values across the entire scene.
     """
@@ -855,10 +896,12 @@ def remove_false_water_bimodality_parallel(water_mask_path,
 
         for block_ind, block_param in enumerate(block_params):
 
-            logger.info(f'remove_false_water_bimodality_parallel '
-                        f'block #{block_ind} from '
-                        f'{block_param.read_start_line} to '
-                        f'{block_param.read_start_line + block_param.read_length}')
+            logger.info(
+                'remove_false_water_bimodality_parallel '
+                f'block #{block_ind} from '
+                f'{block_param.read_start_line} to '
+                f'{block_param.read_start_line + block_param.read_length}')
+
 
             water_mask = dswx_sar_util.get_raster_block(
                 water_mask_path, block_param)
@@ -887,8 +930,7 @@ def remove_false_water_bimodality_parallel(water_mask_path,
 
             intensity_block = dswx_sar_util.get_raster_block(
                 input_dict['intensity'], block_param)
-            landcover_block = dswx_sar_util.get_raster_block(
-                input_dict['landcover'], block_param)
+
             refland_block = dswx_sar_util.get_raster_block(
                 input_dict['ref_land'], block_param)
 
@@ -932,22 +974,24 @@ def remove_false_water_bimodality_parallel(water_mask_path,
 
             for pol_ind, pol in enumerate(pol_list):
                 if pol in ['VV', 'VH', 'HH', 'HV']:
-                    logger.info(f'removing false water using bimodality for {pol}')
+                    logger.info('removing false water using bimodality '
+                                f'for {pol}')
                     # 1 dimensional array for bimodality values
-                    bimodality_output = np.zeros([nb_components_water], 
+                    bimodality_output = np.zeros(nb_components_water,
                                                  dtype='byte')
-                    check_output = np.ones([len(sizes)], dtype='byte')
+                    check_output = np.ones(len(sizes), dtype='byte')
+
 
                     if debug_mode:
                         metric_output = np.zeros([nb_components_water, 5])
                         ref_land_portion_output = \
-                            np.zeros([nb_components_water])
+                            np.zeros(nb_components_water)
+
 
                     args_list = [(component_data[i][0],
                                   component_data[i][1],
                                   component_data[i][2],
                                   refland_block,
-                                  landcover_block,
                                   pol_ind,
                                   intensity_block,
                                   output_water,
@@ -956,7 +1000,8 @@ def remove_false_water_bimodality_parallel(water_mask_path,
                                   debug_mode,
                                   block_param.read_start_line,
                                   block_param.block_length)
-                                  for i in component_data.keys()]
+                                 for i in component_data.keys()]
+
 
                     with Parallel(n_jobs=number_workers) as parallel:
                         results = parallel(
@@ -977,23 +1022,23 @@ def remove_false_water_bimodality_parallel(water_mask_path,
                         output_water_type = 'uint32'
                     else:
                         output_water_type = 'uint16'
-                    output_water = np.array(output_water,
-                                            dtype=output_water_type)
+                    output_water = output_water.astype(output_water_type)
                     old_val = np.arange(1, nb_components_water + 1) - .1
-                    index_array_to_image = np.array(
-                        np.searchsorted(old_val, output_water),
-                        dtype=output_water_type)
+                    index_array_to_image = np.searchsorted(
+                        old_val, output_water).astype(dtype=output_water_type)
                     bimodality_output_add = np.insert(bimodality_output, 0, 0,
                                                       axis=0)
-                    bimodality_image = np.array(bimodality_output_add[
-                        index_array_to_image], dtype='byte')
+                    bimodality_image = bimodality_output_add[
+                        index_array_to_image].astype('byte')
+
                     del bimodality_output
 
                     # Skip saving the checking file in last iteration
                     if block_iter < len(lines_per_block_set)-1:
                         check_output = np.insert(check_output, 0, 0, axis=0)
-                        check_image = np.array(
-                            check_output[index_array_to_image], dtype='byte')
+                        check_image = check_output[
+                            index_array_to_image].astype('byte')
+
 
                     bimodality_set.append(bimodality_image)
 
@@ -1019,9 +1064,16 @@ def remove_false_water_bimodality_parallel(water_mask_path,
                             f'binary_bm_coeff_{pol}.tif',
                             f'binary_bc_coeff_{pol}.tif']
 
-                        metric_output = np.insert(metric_output, 0, np.zeros([1, 5]), axis=0)
-                        for metric_ind, metric_name in enumerate(metric_detail_name):
-                            metric_image0 = metric_output[index_array_to_image, metric_ind]
+                        metric_output = np.insert(metric_output,
+                                                  0,
+                                                  np.zeros([1, 5]),
+                                                  axis=0)
+                        for metric_ind, metric_name in enumerate(
+                             metric_detail_name):
+
+                            metric_image0 = metric_output[index_array_to_image,
+                                                          metric_ind]
+
                             dswx_sar_util.write_raster_block(
                                 os.path.join(outputdir, metric_name),
                                 metric_image0,
@@ -1059,14 +1111,15 @@ def remove_false_water_bimodality_parallel(water_mask_path,
                 scratch_dir=outputdir)
 
             # Skip saving the checking file in last iteration
-            if block_iter < len(lines_per_block_set)-1:
+            if block_iter < len(lines_per_block_set) - 1:
                 # 'check_remove_false_water' has 1 value
                 # for unprocessed components
-                # due to its touching the boundaries and 
+                # due to its touching the boundaries and
                 # has 0 value for processed components.
                 check_remove_false_water_path = os.path.join(
                     outputdir,
-                    f'check_remove_false_water_{"_".join(pol_list)}_{block_iter}.tif')
+                    f'check_remove_false_water_{pol_str}_{block_iter}.tif')
+
                 dswx_sar_util.write_raster_block(
                     check_remove_false_water_path,
                     check_image,
@@ -1079,7 +1132,10 @@ def remove_false_water_bimodality_parallel(water_mask_path,
                 # In last block, the input water change to entire image.
                 # When dealing with the entire image, only remaining components
                 # will be checked.
-                if block_param.block_length + block_param.read_start_line >= rows:
+                if block_param.block_length + \
+                   block_param.read_start_line >= rows:
+
+
                     water_mask_path = check_remove_false_water_path
                 del check_image
             del bimodality_total
@@ -1107,7 +1163,7 @@ def remove_false_water_bimodality_parallel(water_mask_path,
 def fill_gap_water_bimodality_parallel(
         bright_water_path,
         pol_list,
-        threshold=[0.7, 1.5],
+        threshold=None,
         meta_info=None,
         outputdir=None,
         input_dict=None,
@@ -1144,6 +1200,9 @@ def fill_gap_water_bimodality_parallel(
     bimodal_ad_binary : numpy.ndarray
         A binary 2D NumPy array indicating the water gaps.
     """
+    if threshold is None:
+        threshold = [0.7, 1.5]
+
     rows, cols = meta_info['length'], meta_info['width']
     input_lines_per_block = lines_per_block
     pol_str = "_".join(pol_list)
@@ -1215,7 +1274,8 @@ def fill_gap_water_bimodality_parallel(
                 cog_flag=True,
                 scratch_dir=outputdir)
 
-            bimodality_set = np.zeros([block_param.block_length, cols], dtype='byte')
+            bimodality_set = np.zeros([block_param.block_length, cols],
+                                      dtype='byte')
 
             sizes = stats_water[1:, -1]
             bounding_boxes = stats_water[1:, :4]
@@ -1225,7 +1285,8 @@ def fill_gap_water_bimodality_parallel(
                 bbox_x, bbox_y, bbox_w, bbox_h = bounding_boxes[ind, :]
 
                 # Check if the component touches the boundary
-                if bbox_y != 0 and (bbox_y + bbox_h) != block_param.block_length:
+                if bbox_y != 0 and \
+                   (bbox_y + bbox_h) != block_param.block_length:
 
                     margin = int((np.sqrt(2) - 1.2) * np.sqrt(sizes[ind]))
                     sub_x_start = bbox_x - margin
@@ -1252,9 +1313,12 @@ def fill_gap_water_bimodality_parallel(
             for pol_ind, pol in enumerate(pol_list):
                 if pol in ['VV', 'VH', 'HH', 'HV']:
                     logger.info(
-                        f'filling bright water bodies with bimodality using {pol}')
-                    bimodality_output = np.zeros([len(sizes)], dtype='byte')
-                    check_output = np.ones([len(sizes)], dtype='byte')
+                        'filling bright water bodies with bimodality '
+                        f'using {pol}')
+                    bimodality_output = np.zeros(len(sizes),
+                                                 dtype='byte')
+                    check_output = np.ones(len(sizes),
+                                           dtype='byte')
 
                     args_list = [(
                         component_data[i][0],
@@ -1267,12 +1331,14 @@ def fill_gap_water_bimodality_parallel(
                         pol_ind,
                         threshold,
                         block_param.read_start_line,
-                        block_param.block_length) for i in component_data.keys()]
+                        block_param.block_length)
+                        for i in component_data.keys()]
 
                 with Parallel(n_jobs=number_workers) as parallel:
                     results = parallel(
                         delayed(process_bright_water_component)(args)
                         for args in args_list)
+
 
                 for res in results:
                     bt_value, ad_value, result_ind = res
@@ -1285,19 +1351,19 @@ def fill_gap_water_bimodality_parallel(
                     # the checked compoenents is recorded.
                     check_output[result_ind] = 0
 
-                output_water = np.array(output_water, dtype=output_water_type)
+                output_water = output_water.astype(output_water_type)
 
                 old_val = np.arange(1, nb_components_water + 1) - .1
-                index_array_to_image = np.array(np.searchsorted(old_val,
-                                                                output_water),
-                                                dtype=output_water_type)
+                index_array_to_image = np.searchsorted(
+                    old_val, output_water).astype(output_water_type)
                 bimodality_output = np.insert(bimodality_output, 0, 0, axis=0)
                 check_output = np.insert(check_output, 0, 0, axis=0)
 
-                bimodality_image = np.array(
-                    bimodality_output[index_array_to_image], dtype='byte')
-                check_image = np.array(check_output[index_array_to_image],
-                                       dtype='byte')
+                bimodality_image = bimodality_output[
+                    index_array_to_image].astype(dtype='byte')
+                check_image = check_output[
+                    index_array_to_image].astype(dtype='byte')
+
                 bimodality_set += bimodality_image
 
             bimodal_ad_binary = bimodality_set > 0
@@ -1316,7 +1382,8 @@ def fill_gap_water_bimodality_parallel(
                 scratch_dir=outputdir)
 
             check_fill_gap_path = os.path.join(
-                outputdir, f'check_fill_gap_{"_".join(pol_list)}_{block_iter}.tif')
+                outputdir, f'check_fill_gap_{pol_str}_{block_iter}.tif')
+
 
             dswx_sar_util.write_raster_block(
                 check_fill_gap_path,
@@ -1377,12 +1444,14 @@ def run(cfg):
     lines_per_block = bimodality_cfg.lines_per_block
 
     filt_im_str = os.path.join(outputdir, f"filtered_image_{pol_str}.tif")
-    no_data_geotiff_path = os.path.join(outputdir, f"no_data_area_{pol_str}.tif")
+    no_data_geotiff_path = os.path.join(
+        outputdir, f"no_data_area_{pol_str}.tif")
     im_meta = dswx_sar_util.get_meta_from_tif(filt_im_str)
 
     # read the result of landcover masindex_array_to_imageg
     water_map_tif_str = os.path.join(
-        outputdir, 'refine_landcover_binary_{}.tif'.format(pol_str))
+        outputdir, f'refine_landcover_binary_{pol_str}.tif')
+
 
     # read landcover map
     landcover_map_tif_str = os.path.join(
@@ -1477,7 +1546,8 @@ def run(cfg):
 
     t_time_end = time.time()
     t_all_elapsed = t_time_end - t_all
-    logger.info(f"successfully ran bimodality test in {t_all_elapsed:.3f} seconds")
+    logger.info("successfully ran bimodality test in "
+                f"{t_all_elapsed:.3f} seconds")
 
 
 def main():
