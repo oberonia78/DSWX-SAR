@@ -25,6 +25,10 @@ def createParser():
                         help='initial input file')
     parser.add_argument('-o', '--outputdir', dest='output_dir', type=str, required=True,
                         help='initial input file')
+    parser.add_argument('-t', '--ebt', dest='ebt', type=str,
+                        default='',
+                        help='EDL bearer token (EBT)')
+
     return parser
 
 def extract_metadata(geotiff_path):
@@ -357,7 +361,8 @@ def download_dswx_hls(polys,
                       datetime_end_str, 
                       MGRS_tile,
                       download_folder,
-                      download_flag=True):
+                      download_flag=True,
+                      ebt=''):
     CMR_OPS = 'https://cmr.earthdata.nasa.gov/search'
     url = f'{CMR_OPS}/{"granules"}'
     boundind_box = polys.bounds
@@ -367,11 +372,15 @@ def download_dswx_hls(polys,
                     'provider': provider,
                     'bounding_box': f'{boundind_box[1]+0.2},{boundind_box[0]+0.2},{boundind_box[3]-0.2},{boundind_box[2]-0.2}',
                     'page_size': 200,}
+
+    # Set up the header for the GET request
+    request_headers = {'Accept': 'application/json'}
+    if ebt:
+        request_headers['Authorization'] = f"Bearer {ebt}"
+
     response = requests.get(url,
                             params=parameters,
-                            headers={
-                                'Accept': 'application/json'
-                            }
+                            headers=request_headers
                         )
     print('DSWX-HLS found : ', response.headers['CMR-Hits'])
     downloaded_list = []
@@ -397,7 +406,9 @@ def download_dswx_hls(polys,
                     download_file = f'{download_folder}/{dswx_hls_filename}'
 
                     if not os.path.isfile(download_file):
-                        response = requests.get(dswx_hls_url, stream=True)
+                        download_req_header = {"Authorization": f"Bearer {ebt}"} if ebt else None
+                        response = requests.get(dswx_hls_url, stream=True,
+                                                headers=download_req_header)
 
                     # Check if the request was successful
                         if response.status_code == 200:
@@ -474,7 +485,8 @@ def run(cfg):
                                   datetime_end_str,
                                   MGRS_tile_id,
                                   download_folder='DSWx-HLS',
-                                  download_flag=True)
+                                  download_flag=True,
+                                  ebt=cfg.ebt)
             if num_data:
                 for dswx_hls_file in dswx_hls_list:
                     valid_test = False
