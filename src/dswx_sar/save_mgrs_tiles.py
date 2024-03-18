@@ -578,6 +578,7 @@ def run(cfg):
     set_layover_shadow_to_nodata = \
         browser_image_cfg.set_layover_shadow_to_nodata
     set_ocean_masked_to_nodata = browser_image_cfg.set_ocean_masked_to_nodata
+    save_tif_to_output = browser_image_cfg.save_tif_to_output
 
     shapefile = cfg.groups.dynamic_ancillary_file_group.shoreline_shapefile
     ocean_mask_enabled = processing_cfg.ocean_mask.mask_enabled
@@ -651,13 +652,28 @@ def run(cfg):
             pol_type2 = 'SH_POL'
         else:
             logger.info('There is no need to mosaic different polarizations.')
-        pol_set1 = DSWX_S1_POL_DICT[pol_type1]
-        pol_set2 = DSWX_S1_POL_DICT[pol_type2]
-        merge_pol_list = ['_'.join(pol_set1),
-                          '_'.join(pol_set2)]
+            merge_layer_flag = False
+        if merge_layer_flag:
+            pol_set1 = DSWX_S1_POL_DICT[pol_type1]
+            pol_set2 = DSWX_S1_POL_DICT[pol_type2]
+            merge_pol_list = ['_'.join(pol_set1),
+                              '_'.join(pol_set2)]
     else:
         pol_set1 = pol_list
         pol_set2 = []
+        count_pols = [len(glob.glob(f'{input_dir}/*{pol_candidate}*.tif'))
+                      for pol_candidate in pol_list]
+
+        # count_pols is list of number of the available pols.
+        # count_pols[0] is always copol because
+        # Co-pol proceed before cross-pol.
+        if len(pol_list) > 1 and np.any(count_pols != count_pols[0]):
+            # get first character from polarization (V or H)
+            pol_id = pol_list[0][0]
+            pol_mode = f'MIX_DUAL_{pol_id}_SINGLE_{pol_id}_POL'
+
+    logger.info(f'Products are made from {pol_mode} scenario.')
+
     # If polarimetric methods such as ratio, span are used,
     # it is added to the name.
     if pol_options is not None and merge_layer_flag:
@@ -897,7 +913,7 @@ def run(cfg):
                                  set(actual_burst_id)))
         mgrs_meta_dict['MGRS_COLLECTION_MISSING_NUMBER_OF_BURSTS'] = \
             missing_burst
-
+        mgrs_meta_dict['MGRS_POL_MODE'] = pol_mode
     else:
         mgrs_tile_list = get_intersecting_mgrs_tiles_list(
             image_tif=paths['final_water'])
@@ -949,7 +965,7 @@ def run(cfg):
                 output_mgrs_bwtr = f'{dswx_name_format_prefix}_B02_BWTR.tif'
                 output_mgrs_conf = f'{dswx_name_format_prefix}_B03_CONF.tif'
                 output_mgrs_diag = f'{dswx_name_format_prefix}_B04_DIAG.tif'
-                output_mgrs_browse = f'{dswx_name_format_prefix}_BROWSE.png'
+                output_mgrs_browse = f'{dswx_name_format_prefix}_BROWSE'
 
                 # Crop full size of BWTR, WTR, CONF file
                 # and save them into MGRS tile grid
@@ -992,7 +1008,8 @@ def run(cfg):
                         set_not_water_to_nodata=set_not_water_to_nodata,
                         set_hand_mask_to_nodata=set_hand_mask_to_nodata,
                         set_layover_shadow_to_nodata=set_layover_shadow_to_nodata,
-                        set_ocean_masked_to_nodata=set_ocean_masked_to_nodata)
+                        set_ocean_masked_to_nodata=set_ocean_masked_to_nodata,
+                        save_tif_to_output_dir=save_tif_to_output)
 
     t_all_elapsed = time.time() - t_all
     logger.info("successfully ran save_mgrs_tiles in "
