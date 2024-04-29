@@ -69,7 +69,7 @@ class RTCReader(DataReader):
         mosaic_prefix: str
             Mosaicked output file name prefix
         resamp_required: bool
-            Indicates whether resampling (downsampling) needs to be performed 
+            Indicates whether resampling (downsampling) needs to be performed
             on input RTC product in Geotiff.
         resamp_method: str
             Set GDAL.Warp() resampling algorithms based on its built-in options
@@ -133,7 +133,7 @@ class RTCReader(DataReader):
                     )
             else:
                 layover_exist = False
-            
+
         # Mosaic intermediate geotiffs
         nlooks_list = []
         self.mosaic_rtc_geotiff(
@@ -244,7 +244,7 @@ class RTCReader(DataReader):
                         f'{scratch_dir}/{input_prefix}_{data_name}.tif'
                     temp_gtiff = \
                         f'{scratch_dir}/{input_prefix}_temp_{data_name}.tif'
-    
+
                     # Change EPSG
                     change_epsg_tif(
                         input_tif=input_gtiff,
@@ -362,6 +362,7 @@ class RTCReader(DataReader):
             exisits in input RTC
         """
         for idx, dataset_path in enumerate(data_path):
+            print(data_path, 'data_path')
             data_name = Path(dataset_path).name[:2]
             input_gtiff_list = []
             for input_idx, input_rtc in enumerate(input_list):
@@ -372,6 +373,8 @@ class RTCReader(DataReader):
             # Mosaic dataset of same polarization into a single Geotiff
             output_mosaic_gtiff = \
                 f'{output_dir}/{mosaic_prefix}_{data_name}.tif'
+            print('input', input_gtiff_list)
+            print('ouput', output_mosaic_gtiff)
             mosaic_single_output_file(
                 input_gtiff_list,
                 nlooks_list,
@@ -429,8 +432,7 @@ class RTCReader(DataReader):
             A dataclass object  representing the geographical grid
             configuration for an RTC (Radar Terrain Correction) run.
         resamp_method: str
-            Set GDAL.Warp() resampling algorithms based on its built-in options
-            Default = gdal.GRA_NearestNeighbour
+            'average', 'nearest', 'bilinear'
         """
 
         # Check if the file exists
@@ -445,7 +447,8 @@ class RTCReader(DataReader):
 
         # Set GDAL Warp options
         # Resampling method
-        #gdal.GRA_Bilinear, gdal.GRA_NearestNeighbour, gdal.GRA_Cubic, gdal.GRA_Average, etc
+        # gdal.GRA_Bilinear, gdal.GRA_NearestNeighbour,
+        # gdal.GRA_Cubic, gdal.GRA_Average, etc
 
         options = gdal.WarpOptions(
             xRes=output_res_x,
@@ -767,13 +770,14 @@ class RTCReader(DataReader):
                 dswx_meta_mapping['RTC_TRACK_NUMBER']][()]
             abs_orbit_number = src_h5[
                 dswx_meta_mapping['RTC_ABSOLUTE_ORBIT_NUMBER']][()]
-            input_slc_granules = src_h5[
-                dswx_meta_mapping['RTC_INPUT_L1_SLC_GRANULES']][(0)].decode()
+            # TODO : After finalzing GCOV spec, this should be revised.
+            # input_slc_granules = src_h5[
+            #     dswx_meta_mapping['RTC_INPUT_L1_SLC_GRANULES']][(0)].decode()
 
         dswx_metadata_dict = {
             'ORBIT_PASS_DIRECTION': orbit_pass_dir,
             'LOOK_DIRECTION': look_dir,
-            'INPUT_L1_SLC_GRANULES': input_slc_granules,
+            # 'INPUT_L1_SLC_GRANULES': input_slc_granules,
             'PRODUCT_VERSION': prod_ver,
             'ZERO_DOPPLER_START_TIME': zero_dopp_start,
             'ZERO_DOPPLER_END_TIME': zero_dopp_end,
@@ -866,15 +870,15 @@ def run(cfg):
 
     # Mosaic input RTC into output Geotiff
     reader.process_rtc_hdf5(
-        input_list,
-        output_dir,
-        scratch_dir,
-        mosaic_mode,
-        mosaic_prefix,
-        resamp_required,
-        resamp_method,
-        resamp_out_res_x,
-        resamp_out_res_y,
+        input_list=input_list,
+        output_dir=scratch_dir,
+        scratch_dir=scratch_dir,
+        mosaic_mode=mosaic_mode,
+        mosaic_prefix=mosaic_prefix,
+        resamp_required=resamp_required,
+        resamp_method=resamp_method,
+        resamp_out_res_x=resamp_out_res_x,
+        resamp_out_res_y=resamp_out_res_y,
     )
 
 if __name__ == "__main__":
