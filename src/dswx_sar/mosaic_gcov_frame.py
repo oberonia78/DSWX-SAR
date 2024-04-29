@@ -362,7 +362,6 @@ class RTCReader(DataReader):
             exisits in input RTC
         """
         for idx, dataset_path in enumerate(data_path):
-            print(data_path, 'data_path')
             data_name = Path(dataset_path).name[:2]
             input_gtiff_list = []
             for input_idx, input_rtc in enumerate(input_list):
@@ -373,8 +372,6 @@ class RTCReader(DataReader):
             # Mosaic dataset of same polarization into a single Geotiff
             output_mosaic_gtiff = \
                 f'{output_dir}/{mosaic_prefix}_{data_name}.tif'
-            print('input', input_gtiff_list)
-            print('ouput', output_mosaic_gtiff)
             mosaic_single_output_file(
                 input_gtiff_list,
                 nlooks_list,
