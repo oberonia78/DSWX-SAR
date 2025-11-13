@@ -150,13 +150,6 @@ def compute_fuzzy_value(intensity,
                     peak_threshold_raster,
                     maxv_adj)
 
-        # temp = zmf(intensity_band,
-        #            peak_threshold_raster,
-        #            valley_threshold_raster)
-
-        # temp = zmf(intensity_band,
-        #            valley_threshold_raster,
-        #            valley_threshold_raster)
         intensity_z_set.append(temp)
 
         intensity_mask_peak = intensity_band < peak_threshold_raster

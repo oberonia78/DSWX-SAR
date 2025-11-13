@@ -168,7 +168,7 @@ def main():
         return
 
     if flag_first_file_is_text:
-        cfg = RunConfig.load_from_yaml(args.input_yaml[0], 'dswx_s1', args)
+        cfg = RunConfig.load_from_yaml(args.input_yaml[0], 'dswx_ni', args)
 
     processing_cfg = cfg.groups.processing
     pol_mode = processing_cfg.polarization_mode
