@@ -207,7 +207,7 @@ def region_growing_fast(
             logger.info("region_growing: no initial seeds; returning empty mask.")
         return np.zeros_like(seeds, dtype=bool)
 
-    # Default to 8-connected neighbors in 2D if not provided
+    # Default to 4-connected neighbors in 2D if not provided
     if structure is None:
         structure = ndimage.generate_binary_structure(seeds.ndim, 1)
 
