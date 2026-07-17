@@ -926,41 +926,6 @@ def determine_threshold(
                 merge_gap=5,
                 smooth_sigma=1.0,
             )
-        # # Low-side slice (<= threshold)
-        # low_slice = intensity_counts[:idx_threshold + 1]
-        # low_slice = np.nan_to_num(low_slice, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # if low_slice.size == 0 or not np.isfinite(low_slice).any() or np.all(low_slice == 0):
-        #     lowmaxind = max(0, idx_threshold)
-        #     lowmaxind_cands = np.array([], dtype=int)
-        # else:
-        #     lowmaxind_cands, _ = find_peaks(low_slice, distance=5)
-
-        #     lowmaxind = _pick_stable_peak_index(
-        #         low_slice,
-        #         lowmaxind_cands,
-        #         prefer="first",
-        #         rel_tol=0.002,
-        #         abs_tol=1e-4,
-        #     )
-        # # High-side slice (>= threshold)
-        # high_slice = intensity_counts[idx_threshold:]
-        # high_slice = np.nan_to_num(high_slice, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # if high_slice.size == 0 or not np.isfinite(high_slice).any() or np.all(high_slice == 0):
-        #     highmaxind = idx_threshold
-        #     highmaxind_cands = np.array([], dtype=int)
-        # else:
-        #     highmaxind_cands, _ = find_peaks(high_slice, distance=5)
-
-        #     highmaxind_rel = _pick_stable_peak_index(
-        #         high_slice,
-        #         highmaxind_cands,
-        #         prefer="first",
-        #         rel_tol=0.002,
-        #         abs_tol=1e-4,
-        #     )
-        #     highmaxind = idx_threshold + highmaxind_rel
 
         # Clamp indices
         lowmaxind  = int(np.clip(lowmaxind,  0, len(intensity_bins) - 1))
@@ -1706,7 +1671,8 @@ def run_sub_block(intensity,
                   extract_curvefit=False,
                   curvefit_out_dir=None,
                   block_ij=None,
-                  block_origin=None):
+                  block_origin=None,
+                  debug_mode=False):
     """
     Process sub-blocks of SAR intensity data for water detection based on
     the specified configuration.
@@ -1819,7 +1785,8 @@ def run_sub_block(intensity,
             cfg.groups.product_path_group.scratch_path,
             "curvefit_debug"
         )
-        debug_curvefit = False
+
+        debug_curvefit = debug_mode
         if debug_curvefit:
             _write_stage_record(debug_dir, {
                 "stage": "stage_1_before_tile_selection",
@@ -2238,7 +2205,7 @@ def process_block(ii, jj,
         cfg.groups.product_path_group.scratch_path,
         "curvefit_cases"
     )
-
+    
     threshold_tau_block, mode_tau_block, candidate_tile_coords = \
         run_sub_block(
             image_sub,
