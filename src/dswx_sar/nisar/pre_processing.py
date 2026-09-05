@@ -28,8 +28,8 @@ logger = logging.getLogger('dswx_sar')
 def run(cfg):
 
     logger.info("")
-    logger.info('Starting DSWx-S1 Preprocessing')
-
+    logger.info('Starting DSWx-NI Preprocessing')
+    _pre_processing.configure_gdal_for_s3()
     t_all = time.time()
     processing_cfg = cfg.groups.processing
     dynamic_data_cfg = cfg.groups.dynamic_ancillary_file_group
@@ -47,6 +47,17 @@ def run(cfg):
     ref_water_no_data = processing_cfg.reference_water.no_data_value
     pol_list = copy.deepcopy(processing_cfg.polarizations)
     pol_options = processing_cfg.polarimetric_option
+
+    ancillary_warp_num_threads = getattr(
+    processing_cfg,
+    "ancillary_warp_num_threads",
+    1,
+    )
+
+    logger.info(
+        "Number of threads for ancillary GDAL Warp: "
+        f"{ancillary_warp_num_threads}"
+    )
 
     if pol_options is not None:
         pol_list += pol_options
@@ -89,7 +100,9 @@ def run(cfg):
     # create instance to relocate ancillary data
     ancillary_reloc = _pre_processing.AncillaryRelocation(
         ref_filename,
-        scratch_dir)
+        scratch_dir,
+        warp_num_threads=ancillary_warp_num_threads,
+    )
 
     # Note : landcover should precede before reference water.
     relocated_ancillary_filename_set = {
@@ -308,7 +321,7 @@ def _filter_one_block(block_param,
         if mask_path is not None and mask_flag:
             mask_block = _dswx_sar_util.get_raster_block(
                 mask_path, block_param)
-            arr[mask_block == 0] = np.nan
+            arr[(mask_block == 0) | (mask_block == 255)] = np.nan
         arr[arr == 0] = np.nan         # mask padded zeros
         real_pol_data[pol] = arr.astype(np.float32)
 
