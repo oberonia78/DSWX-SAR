@@ -12,8 +12,8 @@ import yamale
 from ruamel.yaml import YAML
 
 import dswx_sar
-from dswx_sar.common._dswx_sar_util import check_gdal_raster_s3
 from dswx_sar.common.read_h5_s3 import open_h5, file_exists
+from dswx_sar.nisar.gunw_coherence import split_inputs, coherence_filter_options
 
 logger = logging.getLogger('dswx_sar')
 
@@ -196,6 +196,7 @@ def check_file_path(file_path: str) -> None:
         Path to file to be checked
     """
     if file_path.startswith('/vsis3/'):
+        from dswx_sar.common._dswx_sar_util import check_gdal_raster_s3
         check_gdal_raster_s3(file_path, raise_error=True)
 
     elif file_path.startswith('s3://'):
@@ -873,6 +874,12 @@ class RunConfig:
 
         groups_cfg = cfg['runconfig']['groups']
 
+        # Downstream GCOV readers must never receive a GUNW path. The mixed
+        # YAML list is split once, including in standalone workflow commands.
+        gcov_files, gunw_files, _ = split_inputs(input_group['input_file_path'])
+        input_group['input_file_path'] = gcov_files
+        input_group['gunw_file_path'] = gunw_files
+
         # Convert runconfig dict to SimpleNamespace
         sns = wrap_namespace(groups_cfg)
         product = sns.primary_executable.product_type
@@ -882,6 +889,11 @@ class RunConfig:
         algorithm_cfg = load_validate_yaml(
             ancillary.algorithm_parameters,
             f'algorithm_parameter_{sensor.lower()}')
+
+        coherence_cfg = algorithm_cfg['runconfig']['processing']['gunw_coherence']
+        if coherence_cfg['fuzzy']['member_min'] >= coherence_cfg['fuzzy']['member_max']:
+            raise ValueError('gunw_coherence.fuzzy.member_min must be less than member_max.')
+        coherence_filter_options(wrap_namespace(coherence_cfg))
 
         # Check if input files have the requested polarizations and
         # sort the order of the polarizations.
@@ -932,6 +944,15 @@ class RunConfig:
             logger.info("to")
             logger.info(f"{new_input_list}")
             input_dir_list = new_input_list
+
+        if not new_input_list:
+            raise ValueError('No GCOV frequencies satisfy mosaic_posting_thresh.')
+
+        # Validate against the retained GCOV frames as well. A GUNW matching
+        # only a discarded coarse-resolution frame is not usable evidence.
+        if gunw_files:
+            split_inputs(input_dir_list + gunw_files)
+        sns.input_file_group.input_file_path = input_dir_list
 
         requested_pol = algorithm_cfg[
             'runconfig']['processing']['polarizations']

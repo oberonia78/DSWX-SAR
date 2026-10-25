@@ -9,6 +9,7 @@ import mimetypes
 from typing import Optional, Tuple
 
 from dswx_sar.common.gcov_reader import RTCReader
+from dswx_sar.nisar import gunw_coherence
 from dswx_sar.nisar.dswx_ni_runconfig import (
     _get_parser,
     RunConfig)
@@ -173,6 +174,9 @@ def run(cfg):
         bbox=mgrs_bbox,      # (xmin, ymin, xmax, ymax) or None
         bbox_epsg=mgrs_epsg, # int or None
     )
+    reference = os.path.join(
+        scratch_dir, f'{mosaic_prefix}_{processing_cfg.polarizations[0]}.tif')
+    gunw_coherence.mosaic(cfg, reference)
     t_all_elapsed = time.time() - t_all
     logger.info("successfully ran mosaic GCOV in "
                 f"{t_all_elapsed:.3f} seconds")

@@ -6,10 +6,8 @@ runconfig:
             pge_name: DSWX_NI_PGE
 
         input_file_group:
-            # REQUIRED - Single S1 RTC geotiff or
-            #            multiple burst RTC directory containing
-            #            hdf5 metadata and rtc geotiff (directory or files)
-            #            for open water
+            # REQUIRED - Mixed GCOV and optional GUNW HDF5 paths. Every GUNW
+            # must match a GCOV track/frame/direction and acquisition.
             input_file_path:
             # Placeholder layover and shadowing mask
             input_layover_shadow_file_path:

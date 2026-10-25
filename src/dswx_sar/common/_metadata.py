@@ -648,10 +648,13 @@ def create_dswx_ni_metadata(cfg,
     dswx_metadata_dict: dict
         Metadata dictionary for NISAR output products.
     """
+    from dswx_sar.nisar import gunw_coherence
+
     # Get general DSWx-NI metadata
     dswx_metadata_dict = _get_general_dswx_metadata_dict(
         cfg,
         product_version=product_version)
+    dswx_metadata_dict.update(gunw_coherence.metadata(cfg, rtc_dirs))
 
     # Add metadata related to ancillary data
     ancillary_cfg = cfg.groups.dynamic_ancillary_file_group

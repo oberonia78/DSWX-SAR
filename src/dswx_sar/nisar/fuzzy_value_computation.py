@@ -6,6 +6,7 @@ import time
 
 import cv2
 import numpy as np
+from dswx_sar.nisar import gunw_coherence
 
 from dswx_sar.common import (_dswx_sar_util,
                              _generate_log,
@@ -92,7 +93,9 @@ def compute_fuzzy_value(intensity,
                         outputdir,
                         workflow,
                         fuzzy_option,
-                        block_param):
+                        block_param,
+                        coherence=None,
+                        coherence_option=None):
     '''Compute fuzzy values from intensity, dem,
     reference water, and HAND
 
@@ -366,6 +369,9 @@ def compute_fuzzy_value(intensity,
                           (hand_z + slope_z + area_s) / 3 * 0.5)
     }
     avgvalue = method_dict[workflow]()
+    if coherence is not None:
+        avgvalue = gunw_coherence.combine_fuzzy(
+            avgvalue, nanmean_intensity_z_set, coherence, coherence_option, zmf)
     avgvalue = _round_float(avgvalue, FUZZY_VALUE_QUANT)
     return avgvalue, intensity_z_set, hand_z, \
         slope_z, area_s, reference_water_s, copol_only
@@ -451,6 +457,10 @@ def run(cfg):
 
     # read metadata including geotransform, projection, size
     im_meta = _dswx_sar_util.get_meta_from_tif(filt_im_str)
+    use_coherence = gunw_coherence.enabled(cfg, 'fuzzy')
+    coherence_used = False
+    if use_coherence:
+        gunw_coherence.check_grid(cfg, filt_im_str)
 
     create_slope_angle_geotiff(
         dem_gdal_str,
@@ -497,6 +507,13 @@ def run(cfg):
             intensity_db = 10.0 * np.log10(intensity.astype(np.float32))
 
         intensity_db = _round_float(intensity_db, INTENSITY_DB_QUANT)
+        coherence = None
+        if use_coherence:
+            coherence = _dswx_sar_util.get_raster_block(
+                gunw_coherence.raster_path(cfg), block_param)
+            coherence_used |= bool((np.isfinite(coherence) &
+                                    (coherence >= 0) & (coherence <= 1) &
+                                    (no_data_raster != 1)).any())
         # compute fuzzy value
         (fuzzy_avgvalue, intensity_z, hand_z,
          slope_z, area_s, ref_water, copol_only) = \
@@ -511,7 +528,10 @@ def run(cfg):
                 outputdir=outputdir,
                 fuzzy_option=option_dict,
                 workflow=workflow,
-                block_param=block_param)
+                block_param=block_param,
+                coherence=coherence,
+                coherence_option=(processing_cfg.gunw_coherence.fuzzy
+                                  if use_coherence else None))
 
         fuzzy_avgvalue[no_data_raster == 1] = -1
         fuzzy_avgvalue[
@@ -571,6 +591,8 @@ def run(cfg):
                     cog_flag=True,
                     scratch_dir=outputdir)
 
+    if use_coherence:
+        gunw_coherence.record_usage(cfg, 'fuzzy', coherence_used)
     t_all_elapsed = time.time() - t_all
     logger.info("successfully ran fuzzy processing in "
                 f"{t_all_elapsed:.3f} seconds")

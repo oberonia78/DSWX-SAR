@@ -5,6 +5,7 @@ import os
 import time
 
 import numpy as np
+from dswx_sar.nisar import gunw_coherence
 
 from dswx_sar.common import (_dswx_sar_util,
                              _masking_with_ancillary,
@@ -262,6 +263,9 @@ def run(cfg):
             debug_mode=processing_cfg.debug_mode,
             metainfo=water_meta,
             scratch_dir=outputdir)
+    if gunw_coherence.enabled(cfg, 'landcover_mask'):
+        refined_water = os.path.join(outputdir, f'refine_landcover_binary_{pol_str}.tif')
+        gunw_coherence.mask_water(cfg, refined_water, landcover_path)
     t_all_elapsed = time.time() - t_all
     logger.info("successfully ran landcover masking in "
                 f"{t_all_elapsed:.3f} seconds")
