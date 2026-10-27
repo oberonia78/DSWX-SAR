@@ -6,7 +6,7 @@ runconfig:
             pge_name: enum('DSWX_NI_PGE')
 
         input_file_group:
-            # REQUIRED - list of RTC products (directory or files)
+            # REQUIRED - GCOV HDF5 paths plus optional GUNW HDF5 paths
             input_file_path: list(str(), min=1)
             # Placeholder for historical GCOV data
             input_layover_shadow_file_path: list(str(), min=1, required=False)

@@ -8,6 +8,7 @@ from dswx_sar.common import _dswx_sar_util, _generate_log
 import gc
 
 from dswx_sar.common import _masking_with_ancillary
+from dswx_sar.nisar import gunw_coherence
 from dswx_sar.common._refine_with_bimodality import (
     remove_false_water_bimodality_parallel,
     fill_gap_water_bimodality_parallel,
@@ -142,6 +143,11 @@ def run(cfg):
         cog_flag=True,
         scratch_dir=outputdir)
 
+    # Gap filling must not restore pixels rejected as coherent land.
+    if gunw_coherence.enabled(cfg, 'landcover_mask'):
+        gunw_coherence.mask_water(
+            cfg, water_tif_str,
+            os.path.join(outputdir, 'interpolated_landcover.tif'), record=False)
     t_time_end = time.time()
     t_all_elapsed = t_time_end - t_all
     logger.info("successfully ran bimodality test in "

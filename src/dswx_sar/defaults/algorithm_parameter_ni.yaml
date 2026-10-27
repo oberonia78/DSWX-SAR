@@ -33,6 +33,51 @@ runconfig:
         hand:
             mask_value: 200
 
+        # Optional GUNW paths are mixed with GCOV in input_file_path.
+        # No GUNW: use the existing GCOV-only workflow even if enabled below.
+        gunw_coherence:
+            # Native posting is read from HDF5, not assumed to be 20/80 m.
+            source: unwrappedInterferogram
+            frequency: A
+            # auto prefers a co-pol shared with the matched GCOV frame.
+            polarization: auto
+            resampling: bilinear
+            mosaic_mode: first
+            # Coherence-specific filtering on the native 20 m grid,
+            # before resampling/mosaic. Use source: wrappedInterferogram.
+            filter:
+                enabled: False
+                # bregman, magnitude_mean, complex_mean
+                method: bregman
+                block_size: 1024
+                block_pad: 32
+                # Mean filters: odd window; low support keeps raw coherence.
+                window_size: 3
+                min_valid_fraction: 0.5
+                bregman:
+                    # Direct [0,1] domain; smaller lambda smooths MORE.
+                    lambda_value: 10.0
+                    max_num_iter: 250
+                    eps: 0.0001
+            fuzzy:
+                enabled: False
+                # Low coherence -> water membership 1; high -> 0 (Z curve).
+                member_min: 0.2
+                member_max: 0.8
+            landcover_mask:
+                enabled: False
+                # threshold, raw_support (same class), or raw_support_pooled
+                method: threshold
+                # Remove water only where coherence >= threshold and
+                # WorldCover is one of these numeric class codes.
+                threshold: 0.12
+                worldcover_classes: [60]  # Bare / sparse vegetation
+                # Support methods include the center; pooled combines all selected classes.
+                window_size: 3
+                support_fraction: 0.7
+                min_valid_fraction: 0.5
+                save_diagnostics: True
+
         ocean_mask:
             # Flag to apply ocean mask
             mask_enabled: False
