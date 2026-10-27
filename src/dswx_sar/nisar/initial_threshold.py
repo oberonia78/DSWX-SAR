@@ -388,64 +388,51 @@ def maybe_pow2db(x, scale):
 
 
 def _solve_gaussian_intersections(m1, s1, A1, m2, s2, A2):
-    if s1 <= 0 or s2 <= 0 or A1 <= 0 or A2 <= 0:
-        return []
-    inv2s1 = 1.0 / (2.0 * s1 * s1)
-    inv2s2 = 1.0 / (2.0 * s2 * s2)
-    lnA = np.log(A2 / A1)
-    a = inv2s1 - inv2s2
-    b = -2.0 * (m1 * inv2s1 - m2 * inv2s2)
-    c = (m1 * m1 * inv2s1 - m2 * m2 * inv2s2) - lnA
-    if np.isclose(a, 0.0):
-        if np.isclose(b, 0.0): return []
-        return [-c / b]
-    disc = b * b - 4.0 * a * c
-    if disc < 0: return []
-    sqrt_disc = np.sqrt(disc)
-    return sorted([(-b - sqrt_disc) / (2.0 * a),
-                   (-b + sqrt_disc) / (2.0 * a)])
+    """Roots of equal peak-amplitude Gaussian curves, in stable centered units.
 
-def _threshold_from_bimodal_fit(first_mode, second_mode, bounds=None, p_low=0.98, p_high=0.02):
-    m1, s1, A1 = first_mode
-    m2, s2, A2 = second_mode
-    if m1 > m2:
-        (m1, s1, A1), (m2, s2, A2) = (m2, s2, A2), (m1, s1, A1)
-    roots = _solve_gaussian_intersections(m1, s1, A1, m2, s2, A2)
-    intersection = None
-    for x in roots:
-        if m1 <= x <= m2:
-            intersection = x
-            break
-    if intersection is None:
-        x_low  = norm.ppf(p_low,     m1, s1)      # near right tail of low mode
-        x_high = norm.ppf(1-p_high,  m2, s2)      # near left tail of high mode
-        cand = 0.5 * (np.clip(x_low, m1, m2) + np.clip(x_high, m1, m2))
-        intersection = np.clip(cand, m1, m2)
+    ln(A1)-((x-m1)/s1)^2/2 == ln(A2)-((x-m2)/s2)^2/2.
+    Thus the polynomial constant contains +ln(A2/A1), not a minus sign.
+    """
+    if not np.isfinite([m1,s1,A1,m2,s2,A2]).all() or min(s1,s2,A1,A2)<=0:
+        return []
+    center=(m1+m2)/2
+    u,v=m1-center,m2-center
+    k1,k2=1/(2*s1*s1),1/(2*s2*s2)
+    coefficients=[k1-k2,-2*(u*k1-v*k2),u*u*k1-v*v*k2+np.log(A2)-np.log(A1)]
+    roots=np.roots(coefficients)
+    return sorted(float(z.real+center) for z in roots
+                  if abs(z.imag)<=1e-9*max(1.,abs(z.real)))
+
+def _threshold_from_bimodal_fit(first_mode, second_mode, bounds=None,
+                               p_low=0.98, p_high=0.02):
+    """One genuine in-bounds crossing between means; no clipping/fallback.
+
+    p_low/p_high remain in the signature for existing callers only.
+    """
+    f,s=sorted((np.asarray(first_mode,float),np.asarray(second_mode,float)),key=lambda z:z[0])
+    if f.shape!=(3,) or s.shape!=(3,) or not np.isfinite(np.r_[f,s]).all():
+        raise ValueError('Invalid Gaussian components')
+    m1,s1,a1=f; m2,s2,a2=s
+    if m1>=m2 or min(s1,s2,a1,a2)<=0:
+        raise ValueError('Invalid Gaussian means/widths/amplitudes')
+    roots=[z for z in _solve_gaussian_intersections(m1,s1,a1,m2,s2,a2) if m1<z<m2]
     if bounds is not None:
-        intersection = float(np.clip(intersection, bounds[0], bounds[1]))
-    return intersection, m1
+        b=np.asarray(bounds,float)
+        if b.shape!=(2,) or not np.isfinite(b).all() or b[0]>=b[1]:
+            raise ValueError('Invalid threshold bounds')
+        roots=[z for z in roots if b[0]<=z<=b[1]]
+    if len(roots)!=1:
+        raise ValueError('No unique true crossing between means within threshold bounds')
+    crossing=roots[0]
+    residual=np.log(a1)-.5*((crossing-m1)/s1)**2-np.log(a2)+.5*((crossing-m2)/s2)**2
+    if not np.isfinite(residual) or abs(residual)>1e-7:
+        raise ValueError('Gaussian crossing equality check failed')
+    return float(crossing),float(m1)
 
 
 def _solve_gaussian_intersections_(m1, s1, A1, m2, s2, A2):
-    # Returns sorted real roots where A1*N(m1,s1) == A2*N(m2,s2)
-    if s1 <= 0 or s2 <= 0 or A1 <= 0 or A2 <= 0:
-        return []
-    inv2s1 = 1.0 / (2.0 * s1 * s1)
-    inv2s2 = 1.0 / (2.0 * s2 * s2)
-    lnA = np.log(A2 / A1)
-    a = inv2s1 - inv2s2
-    b = -2.0 * (m1 * inv2s1 - m2 * inv2s2)
-    c = (m1 * m1 * inv2s1 - m2 * m2 * inv2s2) - lnA
-    if np.isclose(a, 0.0):
-        if np.isclose(b, 0.0):
-            return []
-        return [-c / b]
-    disc = b * b - 4.0 * a * c
-    if disc < 0:
-        return []
-    sqrt_disc = np.sqrt(disc)
-    return sorted([(-b - sqrt_disc) / (2.0 * a),
-                   (-b + sqrt_disc) / (2.0 * a)])
+    # The tile-relax helper uses this alternate historical spelling.
+    return _solve_gaussian_intersections(m1,s1,A1,m2,s2,A2)
 
 
 def _multiotsu_from_hist_deterministic(intensity_bins, intensity_counts):
@@ -835,6 +822,62 @@ def classify_from_reference(
         output = None
         datasets.clear()
 
+
+FINAL_GAUSSIAN_POLICY_VERSION = 'corrected-crossing-hybrid-v2'
+
+def _final_gaussian_threshold(first_mode, second_mode, bounds,
+                              adjust_if_nonoverlap=True,
+                              separation_low_q=None, separation_high_q=None,
+                              water_q=0.95):
+    """Final policy matching the notebook's accepted-fit/crossing prerequisite.
+
+    The environment switch disables ONLY the quantile branch. Corrected
+    crossings are still used when it is zero; this is not the old baseline.
+    Bounds and quantized positive mode gap are checked without clipping.
+    """
+    f,s=sorted((np.asarray(first_mode,float),np.asarray(second_mode,float)),key=lambda z:z[0])
+    switch=os.environ.get('DSWX_HYBRID_NONOVERLAP','1').strip().lower()
+    if switch not in ('0','1','false','true'):
+        raise ValueError('DSWX_HYBRID_NONOVERLAP must be 0 or 1')
+    enabled=bool(adjust_if_nonoverlap and switch in ('1','true'))
+    info=dict(policy=FINAL_GAUSSIAN_POLICY_VERSION,enabled=enabled,applied=False,
+              accepted=False,method='rejected',reason=None,
+              crossing_threshold_db=None,separated=None,separation_gap_db=None,
+              low_edge_db=None,high_edge_db=None,quantile_threshold_db=None)
+    # Config errors should stop rather than silently change scientific policy.
+    lq=.99 if separation_low_q is None else float(separation_low_q)
+    hq=.01 if separation_high_q is None else float(separation_high_q)
+    if not (.5<lq<1 and 0<hq<.5 and .5<float(water_q)<1):
+        raise ValueError('Invalid separation/water quantile')
+    info.update(separation_low_q=lq,separation_high_q=hq,water_q=float(water_q))
+    try:
+        crossing,mode=_threshold_from_bimodal_fit(f,s,bounds=bounds)
+    except ValueError as error:
+        info['reason']=str(error)
+        return np.nan,np.nan,info
+    threshold=crossing
+    info.update(crossing_threshold_db=crossing,method='corrected_intersection')
+    low_edge=float(norm.ppf(lq,loc=f[0],scale=f[1]))
+    high_edge=float(norm.ppf(hq,loc=s[0],scale=s[1]))
+    gap=high_edge-low_edge
+    separated=bool(gap>0.)
+    quantile=float(norm.ppf(water_q,loc=f[0],scale=f[1]))
+    info.update(separated=separated,separation_gap_db=gap,
+                low_edge_db=low_edge,high_edge_db=high_edge,quantile_threshold_db=quantile)
+    if enabled and separated:
+        threshold=quantile
+        info.update(method='low_gaussian_quantile',applied=True)
+    rounded_threshold=float(np.round(threshold/.01)*.01)
+    rounded_mode=float(np.round(mode/.01)*.01)
+    if not (bounds[0]<=threshold<=bounds[1] and bounds[0]<=rounded_threshold<=bounds[1]):
+        info['reason']='final_threshold_outside_bounds'
+        return np.nan,np.nan,info
+    if rounded_threshold<=rounded_mode:
+        info['reason']='nonpositive_quantized_mode_gap'
+        return np.nan,np.nan,info
+    info.update(accepted=True,reason='accepted',threshold_before_quantization_db=threshold,
+                threshold_after=rounded_threshold,mode_after=rounded_mode)
+    return float(threshold),float(mode),info
 
 def determine_threshold(
         intensity,
@@ -1280,17 +1323,10 @@ def determine_threshold(
 
                     model_intersection_used = True
 
-                    MODEL_INTERSECTION_MAX_SHIFT_DB = 0.25
-                    model_shift = abs(threshold_model - threshold)
-
-                    if model_shift <= MODEL_INTERSECTION_MAX_SHIFT_DB:
-                        threshold = threshold_model
-                        modevalue = mode_lower
-                        model_intersection_used = True
-                    else:
-                        model_intersection_used = False
-                        threshold = threshold
-                        modevalue = float(tau_mode_left)
+                    # Accept the validated corrected crossing regardless of KI/Otsu seed distance.
+                    threshold = threshold_model
+                    modevalue = mode_lower
+                    model_intersection_used = True
                     idx_threshold = np.searchsorted(intensity_bins, threshold)
                     idx_threshold = int(np.clip(idx_threshold, 0, max(0, len(intensity_bins) - 1)))
                     threshold_after_model_intersection = _safe_float(threshold)
@@ -1759,6 +1795,38 @@ def determine_threshold(
             modevalue_final = float(tau_mode_left)
         else:
             modevalue_final = float(hist_mode_final)
+        # BEGIN FINAL CORRECTED GAUSSIAN POLICY v2
+        # Apply AFTER all legacy adjustments. Those stages cannot overwrite
+        # the accepted corrected crossing / separated-water quantile.
+        hybrid_nonoverlap_info = dict(
+            policy=FINAL_GAUSSIAN_POLICY_VERSION,accepted=False,
+            applied=False,method='rejected',reason='bimodal_fit_invalid')
+        if threshold_scale == 'db':
+            threshold_before_final_policy = _safe_float(threshold)
+            if optimization and bimodal_fit_valid:
+                threshold, modevalue_final, hybrid_nonoverlap_info = _final_gaussian_threshold(
+                    first_mode, second_mode, bounds,
+                    adjust_if_nonoverlap=adjust_if_nonoverlap,
+                    separation_low_q=adjust_thresh_low_dist_percent,
+                    separation_high_q=adjust_thresh_high_dist_percent,
+                    water_q=0.95)
+            else:
+                threshold, modevalue_final = np.nan, np.nan
+            hybrid_nonoverlap_info['threshold_before'] = threshold_before_final_policy
+            idx_threshold = int(np.clip(
+                np.searchsorted(intensity_bins, threshold),
+                0, max(0, len(intensity_bins)-1)))
+            logger.info(
+                '[FINAL_GAUSSIAN_THRESHOLD] pol=%s block=%s window=%s '
+                'method=%s accepted=%s reason=%s before_db=%s after_db=%s',
+                pol, block_ij, (ystart,yend,xstart,xend),
+                hybrid_nonoverlap_info['method'],
+                hybrid_nonoverlap_info['accepted'],hybrid_nonoverlap_info['reason'],
+                threshold_before_final_policy,threshold)
+        else:
+            hybrid_nonoverlap_info.update(method='existing_linear',reason='dB_policy_not_applied')
+        # END FINAL CORRECTED GAUSSIAN POLICY v2
+
         FINAL_QUANTIZE_DB = 0.01
 
         if threshold_scale == "db":
@@ -1770,7 +1838,7 @@ def determine_threshold(
 
         threshold_before_margin_guard = _safe_float(threshold)
         margin = 0.05
-        if np.isfinite(modevalue_final) and np.isfinite(threshold) and (modevalue_final >= threshold):
+        if (not hybrid_nonoverlap_info.get('accepted', False) and np.isfinite(modevalue_final) and np.isfinite(threshold) and (modevalue_final >= threshold)):
             margin_guard_used = True
             threshold = modevalue_final + margin
             idx_threshold = np.searchsorted(intensity_bins, threshold)
@@ -1789,6 +1857,8 @@ def determine_threshold(
             modevalue = np.round(modevalue / FINAL_QUANTIZE_DB) * FINAL_QUANTIZE_DB if np.isfinite(modevalue) else modevalue
         if extract_curvefit and curvefit_out_dir is not None:
             _write_stage_record(curvefit_out_dir, {
+                "hybrid_nonoverlap": hybrid_nonoverlap_info,
+                "final_gaussian_policy": hybrid_nonoverlap_info,
                 "stage": "stage_4_threshold_final",
                 "pol": pol,
                 "block_ij": list(block_ij) if block_ij is not None else None,
@@ -2743,6 +2813,122 @@ def write_reference_fallback_thresholds(
     )
 
 
+def write_initial_water_extent(
+        intensity_path, threshold_paths, output_path,
+        intensity_bands=None, polarizations=None, sar_nodata_path=None,
+        intensity_scale='linear', threshold_nodata=-50.0,
+        threshold_pixel_grid=False, lines_per_block=512):
+    """Threshold each band independently on the original SAR pixel grid.
+
+    threshold_pixel_grid=True explicitly permits threshold rasters with pixel
+    coordinates and no CRS, as produced by the production fill function.
+    Sizes must still match exactly; no reprojection/resampling is performed.
+    The output always receives SAR georeferencing. Per-band water percentages
+    use that band's valid pixels; this is NOT a fused final DSWx water product.
+    """
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+    from contextlib import ExitStack
+    import numpy as np
+    import rasterio
+    from rasterio.windows import Window
+
+    intensity_path=Path(intensity_path)
+    if isinstance(threshold_paths,(str,Path)): threshold_paths=[threshold_paths]
+    threshold_paths=[Path(p) for p in threshold_paths]
+    output_path=Path(output_path)
+    if not threshold_paths: raise ValueError('At least one threshold file required')
+    n=len(threshold_paths)
+    intensity_bands=list(intensity_bands if intensity_bands is not None else range(1,n+1))
+    polarizations=list(polarizations if polarizations is not None else
+                       [f'band_{b}' for b in intensity_bands])
+    if len(intensity_bands)!=n or len(polarizations)!=n:
+        raise ValueError('Threshold, SAR band, and polarization counts differ')
+    if len(set(polarizations))!=n: raise ValueError('Duplicate polarization names')
+    if intensity_scale not in ('linear','db'): raise ValueError('Unknown intensity scale')
+    if int(lines_per_block)<1: raise ValueError('lines_per_block must be positive')
+    inputs=[intensity_path,*threshold_paths]
+    if sar_nodata_path is not None: inputs.append(Path(sar_nodata_path))
+    if output_path.resolve() in [p.resolve() for p in inputs]:
+        raise ValueError('Output must not overwrite an input')
+    output_path.parent.mkdir(parents=True,exist_ok=True)
+    stats=[dict(polarization=str(pol),intensity_band=int(band),
+                threshold_path=str(path),water_pixels=0,valid_pixels=0)
+           for pol,band,path in zip(polarizations,intensity_bands,threshold_paths)]
+    fd,tmp=tempfile.mkstemp(prefix=output_path.stem+'_',suffix='.tif',dir=output_path.parent)
+    os.close(fd)
+    try:
+        with ExitStack() as stack:
+            sar=stack.enter_context(rasterio.open(intensity_path))
+            thresholds=[stack.enter_context(rasterio.open(p)) for p in threshold_paths]
+            mask=(stack.enter_context(rasterio.open(sar_nodata_path))
+                  if sar_nodata_path is not None else None)
+            if any(b<1 or b>sar.count for b in intensity_bands):
+                raise ValueError(f'Invalid SAR band: input has {sar.count} bands')
+            def aligned(ds,allow_pixel=False):
+                if ds.width!=sar.width or ds.height!=sar.height:
+                    raise ValueError(f'Raster size mismatch: {ds.name}')
+                # Identity/pixel-coordinate threshold rasters intentionally
+                # carry no CRS in the production interpolation implementation.
+                if allow_pixel and ds.crs is None: return
+                tolerance=max(abs(sar.transform.a),abs(sar.transform.e),1e-9)*1e-6
+                if ds.crs!=sar.crs or not np.allclose(
+                        tuple(ds.transform),tuple(sar.transform),rtol=0,atol=tolerance):
+                    raise ValueError(f'Raster grid mismatch: {ds.name}. '
+                        'Only for known production pixel-grid thresholds, set threshold_pixel_grid=True.')
+            for ds in thresholds:
+                if ds.count!=1: raise ValueError('Each threshold raster must have one band')
+                aligned(ds,threshold_pixel_grid)
+            if mask is not None:
+                aligned(mask)
+                if mask.count!=1: raise ValueError('SAR no_data_area must have one band')
+            profile=dict(driver='GTiff',height=sar.height,width=sar.width,
+                         count=n,dtype='uint8',crs=sar.crs,transform=sar.transform,
+                         nodata=255,compress='deflate',tiled=True,
+                         blockxsize=256,blockysize=256,BIGTIFF='IF_SAFER')
+            dst=stack.enter_context(rasterio.open(tmp,'w',**profile))
+            dst.update_tags(product='initial threshold water candidates',
+                            rule='intensity_db < threshold_db',
+                            classes='0=non-water;1=water;255=NoData',
+                            intensity_source=str(intensity_path),intensity_scale=intensity_scale)
+            for j,pol in enumerate(polarizations,1): dst.set_band_description(j,str(pol))
+            for r0 in range(0,sar.height,int(lines_per_block)):
+                window=Window(0,r0,sar.width,min(int(lines_per_block),sar.height-r0))
+                mask_values=mask.read(1,window=window) if mask is not None else None
+                for j,(band,th) in enumerate(zip(intensity_bands,thresholds)):
+                    image=sar.read(band,window=window,masked=True)
+                    threshold=th.read(1,window=window,masked=True)
+                    x=np.asarray(image.data,dtype=np.float64)
+                    t=np.asarray(threshold.data,dtype=np.float64)
+                    good=(~np.ma.getmaskarray(image) & ~np.ma.getmaskarray(threshold)
+                          & np.isfinite(x) & np.isfinite(t))
+                    if threshold_nodata is not None: good &= t!=threshold_nodata
+                    if mask_values is not None:
+                        good &= np.isfinite(mask_values) & (mask_values==0)
+                    if intensity_scale=='linear':
+                        good &= x>0
+                        with np.errstate(divide='ignore',invalid='ignore'):
+                            x=10*np.log10(np.where(x>0,x,np.nan))
+                    out=np.full(x.shape,255,dtype=np.uint8)
+                    out[good]=(x[good]<t[good]).astype(np.uint8)
+                    dst.write(out,j+1,window=window)
+                    stats[j]['water_pixels']+=int(np.count_nonzero(out==1))
+                    stats[j]['valid_pixels']+=int(np.count_nonzero(good))
+        os.replace(tmp,output_path)
+    finally:
+        if os.path.exists(tmp): os.unlink(tmp)
+    for row in stats:
+        row['water_percent']=(100*row['water_pixels']/row['valid_pixels']
+                              if row['valid_pixels'] else None)
+    report=dict(output=str(output_path),bands=stats,
+                threshold_units='dB',intensity_scale=intensity_scale,
+                sar_nodata_path=str(sar_nodata_path) if sar_nodata_path is not None else None,
+                threshold_pixel_grid=bool(threshold_pixel_grid))
+    output_path.with_suffix('.metrics.json').write_text(json.dumps(report,indent=2))
+    return report
+
 def run(cfg):
     """
     Run inital threshold with parameters in cfg dictionary
@@ -3163,6 +3349,22 @@ def run(cfg):
                 #     filled_value=thres_max,
                 #     no_data=-50,
                 #     average_tile=average_threshold_flag)
+
+    # Always export raw threshold candidates, independently of debug_mode.
+    # Output bands follow pol_list; no OR/AND fusion is performed.
+    extent_report = write_initial_water_extent(
+        intensity_path=filt_im_str,
+        threshold_paths=[os.path.join(outputdir, f"intensity_threshold_filled_{p}.tif")
+                         for p in pol_list],
+        output_path=os.path.join(outputdir, "initial_water_extent.tif"),
+        intensity_bands=list(range(1, len(pol_list)+1)),
+        polarizations=pol_list,
+        sar_nodata_path=no_data_geotiff_path,
+        intensity_scale="linear",
+        threshold_pixel_grid=True,
+        lines_per_block=lines_per_block,
+    )
+    logger.info("Initial water extent: %s", extent_report)
 
     if processing_cfg.debug_mode:
 

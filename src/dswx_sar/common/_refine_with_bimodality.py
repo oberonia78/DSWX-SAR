@@ -37,7 +37,8 @@ class BimodalityMetrics:
                  hist_min=-32,
                  hist_max=-5,
                  hist_num=200,
-                 gauss_dist_thres_bound=None):
+                 gauss_dist_thres_bound=None,
+                 max_mean_separation=12.0):
         """Initialized BimodalityMetrics Class with intensity array
 
         Parameters
@@ -57,7 +58,8 @@ class BimodalityMetrics:
         if gauss_dist_thres_bound is None:
             gauss_dist_thres_bound = [-18, 0]
         self.intensity_array = np.asarray(intensity_array, dtype=np.float32).flatten()
-
+        self.fit_error = None
+        self.max_mean_separation = max_mean_separation
         with np.errstate(divide="ignore", invalid="ignore"):
             int_db = 10.0 * np.log10(self.intensity_array)
 
@@ -146,9 +148,12 @@ class BimodalityMetrics:
                 self.simul_second = self.gauss(self.bincenter, *self.second_mode)
                 self.simul_all = self.simul_first + self.simul_second
                 self.optimization = True
-
             except Exception as e:
-                logger.info(f'Bimodal curve fitting fails in BimodalityMetrics: {e}')
+                self.fit_error = f"{type(e).__name__}: {e}"
+                logger.info(
+                    f"Bimodal curve fitting fails in BimodalityMetrics: "
+                    f"{self.fit_error}"
+                )
                 self.optimization = False
         else:
             self.optimization = False
@@ -163,7 +168,7 @@ class BimodalityMetrics:
         Keeps the original Chini/Gaussian-fit method, but avoids accepting
         platform-dependent local minima from a single curve_fit call.
         """
-
+        self.fit_attempts = []
         x = np.asarray(self.bincenter, dtype=np.float64)
         y = np.asarray(self.prob, dtype=np.float64)
 
@@ -201,7 +206,7 @@ class BimodalityMetrics:
 
         best = None
 
-        for p0 in p0_list:
+        for attempt_index, p0 in enumerate(p0_list):
             p0 = np.asarray(p0, dtype=np.float64)
             p0 = np.clip(p0, lower + 1e-6, upper - 1e-6)
             p0 = np.round(p0, 12)
@@ -245,15 +250,30 @@ class BimodalityMetrics:
                     0.05 <= s2 <= 3.5 and
                     1e-4 <= a1 <= 0.50 and
                     1e-4 <= a2 <= 0.50 and
-                    0.3 <= sep <= 12.0
+                    sep >= 0.3 and
+                    (
+                        self.max_mean_separation is None
+                        or sep <= self.max_mean_separation
+                    )
                 )
 
                 if not fit_valid:
+                    self.fit_attempts.append({
+                        "attempt": attempt_index,
+                        "status": "invalid_parameters",
+                        "params": params.tolist(),
+                        "separation": float(sep),
+                    })
                     continue
 
                 residual = y - self.bimodal(x, *params)
                 rss = float(np.sum(residual ** 2))
-
+                self.fit_attempts.append({
+                    "attempt": attempt_index,
+                    "status": "valid_fit",
+                    "params": params.tolist(),
+                    "rss": rss,
+                })
                 # Canonical score:
                 # round RSS so tiny platform differences do not change winner.
                 rss_key = round(rss, 12)
@@ -274,9 +294,14 @@ class BimodalityMetrics:
                         "score": score,
                     }
 
-            except Exception:
+            except Exception as e:
+                self.fit_attempts.append({
+                    "attempt": attempt_index,
+                    "status": "exception",
+                    "error": f"{type(e).__name__}: {e}",
+                    "initial_parameters": p0.tolist(),
+                })
                 continue
-
         if best is None:
             raise RuntimeError("All deterministic bimodal curve fits failed.")
 
@@ -966,9 +991,12 @@ def estimate_bimodality(array,
                         np.nansum(counts_smooth[cand_left] *
                                   bincenter[cand_left]) \
                         / left_sum
-                    stdp_left = np.sqrt(np.nansum(
-                        ((counts_smooth[cand_left] * bincenter[cand_left])
-                         - meanp_left)**2)) / left_sum
+                    stdp_left = np.sqrt(
+                        np.nansum(
+                            counts_smooth[cand_left]
+                            * (bincenter[cand_left] - meanp_left)**2
+                        ) / left_sum
+                    )
                     probp_left = np.nansum(counts_smooth[cand_left]) / countsum
 
                 else:
@@ -979,10 +1007,12 @@ def estimate_bimodality(array,
                         np.nansum(counts_smooth[cand_right] *
                                   bincenter[cand_right]) \
                         / right_sum
-                    stdp_right = np.sqrt(np.nansum(
-                        ((counts_smooth[cand_right] *
-                          bincenter[cand_right]) -
-                         meanp_right)**2)) / right_sum
+                    stdp_right = np.sqrt(
+                        np.nansum(
+                            counts_smooth[cand_right]
+                            * (bincenter[cand_right] - meanp_right)**2
+                        ) / right_sum
+                    )
                     probp_right = \
                         np.nansum(counts_smooth[cand_right]) / countsum
                 else:
@@ -998,6 +1028,97 @@ def estimate_bimodality(array,
         ad_max = np.nanmax(ads)
 
     return sigma_max, ad_max
+
+
+import cv2
+import numpy as np
+from scipy import ndimage
+from skimage.segmentation import watershed
+
+
+def label_water_with_narrow_connections_split(
+    water_mask,
+    opening_size=3,
+):
+    """Split narrow connections while preserving every input water pixel.
+
+    Return the same four outputs used from connectedComponentsWithStats.
+    Centroids are returned as None because the caller does not use them.
+    """
+    if opening_size < 1 or opening_size % 2 == 0:
+        raise ValueError("opening_size must be a positive odd integer")
+
+    water = np.ascontiguousarray(water_mask, dtype=np.uint8)
+
+    n_original, original_labels, original_stats, _ = (
+        cv2.connectedComponentsWithStats(water, connectivity=8)
+    )
+
+    if n_original == 1 or opening_size == 1:
+        return n_original, original_labels, original_stats, None
+
+    # Opening is used only to create markers.
+    cores = cv2.morphologyEx(
+        water,
+        cv2.MORPH_OPEN,
+        np.ones((opening_size, opening_size), dtype=np.uint8),
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+
+    n_markers, markers = cv2.connectedComponents(
+        cores, connectivity=8
+    )
+
+    # Small/thin components may disappear during opening.
+    # Give each such original component a marker so it is preserved.
+    has_marker = np.zeros(n_original, dtype=bool)
+    has_marker[np.unique(original_labels[cores != 0])] = True
+
+    missing = np.flatnonzero(~has_marker)
+    missing = missing[missing != 0]
+
+    fallback = np.zeros(n_original, dtype=np.int32)
+    fallback[missing] = np.arange(
+        n_markers,
+        n_markers + missing.size,
+        dtype=np.int32,
+    )
+    np.maximum(markers, fallback[original_labels], out=markers)
+
+    # A flat surface gives a spatial partition within the original mask.
+    # No original water pixels are removed.
+    labels = watershed(
+        np.zeros(water.shape, dtype=np.uint8),
+        markers=markers,
+        mask=water != 0,
+        connectivity=np.ones((3, 3), dtype=bool),
+        watershed_line=False,
+    ).astype(np.int32, copy=False)
+
+    # Rebuild the OpenCV stats layout expected by the existing code:
+    # LEFT, TOP, WIDTH, HEIGHT, AREA.
+    n_labels = int(labels.max()) + 1
+    stats = np.zeros((n_labels, 5), dtype=np.int32)
+    stats[:, cv2.CC_STAT_AREA] = np.bincount(
+        labels.ravel(), minlength=n_labels
+    )
+
+    for label_id, bounds in enumerate(
+        ndimage.find_objects(labels), start=1
+    ):
+        if bounds is None:
+            continue
+
+        ys, xs = bounds
+        stats[label_id, :4] = (
+            xs.start,
+            ys.start,
+            xs.stop - xs.start,
+            ys.stop - ys.start,
+        )
+
+    return n_labels, labels, stats, None
 
 
 def process_dark_land_component(args):
@@ -1363,10 +1484,15 @@ def remove_false_water_bimodality_parallel(water_mask_path,
 
             # computes the connected components labeled image of boolean image
             # and also produces a statistics output for each label
-            nb_components_water, output_water, stats_water, _ = \
-                cv2.connectedComponentsWithStats(water_mask.astype(np.uint8),
-                                                 connectivity=8)
-
+            # nb_components_water, output_water, stats_water, _ = \
+            #     cv2.connectedComponentsWithStats(water_mask.astype(np.uint8),
+            #                                      connectivity=8)
+            nb_components_water, output_water, stats_water, _ = (
+                label_water_with_narrow_connections_split(
+                    water_mask,
+                    opening_size=3,
+                )
+            )
             nb_components_water = nb_components_water - 1
             logger.info(f'detected component number : {nb_components_water}')
 

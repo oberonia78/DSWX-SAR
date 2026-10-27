@@ -290,7 +290,13 @@ class TileSelection:
             Returns True if the tile's intensity distribution is bimodal,
             and False otherwise.
         """
-        metric_obj = _refine_with_bimodality.BimodalityMetrics(intensity)
+        metric_obj = _refine_with_bimodality.BimodalityMetrics(
+            intensity,
+            hist_min=-32.0,
+            hist_max=5.8,
+            hist_num=280,
+            max_mean_separation=None,
+        )
         select_flag = metric_obj.compute_metric()
 
         if not return_metric:
@@ -433,7 +439,17 @@ class TileSelection:
                     ]
                 except Exception:
                     pass
+        metric["chini_raw_select_flag"] = metric.get("chini_select_flag")
+        metric["chini_select_flag"] = bool(select_flag)
 
+        metric["chini_fit_error"] = getattr(metric_obj, "fit_error", None)
+        metric["chini_fit_attempts"] = getattr(metric_obj, "fit_attempts", [])
+
+        metric["chini_fit_invalid"] = (
+            bool(chini_fit_invalid)
+            if "chini_fit_invalid" in locals()
+            else None
+        )
         return select_flag, metric
     def get_water_portion_mask(self, water_mask):
         """
@@ -3170,3 +3186,71 @@ def run(cfg):
     logger.info(f"successfully ran computing initial threshold in "
                 f"{t_all_elapsed:.3f} seconds")
 
+# BEGIN DSWX FINAL HYBRID POLICY v1
+def hybrid_nonoverlap_threshold(
+        threshold, first_mode, second_mode, bounds,
+        separation_low_q=0.99, separation_high_q=0.01,
+        water_q=0.95, minimum_gap_db=0.0):
+    """Final dB-only threshold policy; returns (threshold, audit).
+
+    The low Gaussian's upper quantile is used only when its central interval
+    ends strictly before the high Gaussian's central interval begins.
+    This is a Gaussian-component quantile, not an empirical whole-tile quantile.
+    Invalid bounds/parameters are never silently clipped. Invalid fits are
+    skipped; out-of-bounds quantile thresholds reject the threshold as NaN.
+    """
+    import os
+    import numpy as np
+    from scipy.stats import norm
+
+    switch = os.environ.get('DSWX_HYBRID_NONOVERLAP', '1').strip().lower()
+    if switch not in ('0', '1', 'false', 'true'):
+        raise ValueError('DSWX_HYBRID_NONOVERLAP must be 0 or 1')
+    enabled = switch in ('1', 'true')
+    audit = dict(policy='dswx-final-hybrid-v1', enabled=enabled,
+                 applied=False, method='existing', reason='disabled' if not enabled else 'overlap',
+                 threshold_before=float(threshold), threshold_after=float(threshold))
+    if not enabled:
+        return threshold, audit
+    low_q = 0.99 if separation_low_q is None else float(separation_low_q)
+    high_q = 0.01 if separation_high_q is None else float(separation_high_q)
+    water_q = float(water_q)
+    minimum_gap_db = float(minimum_gap_db)
+    if not (.5 < low_q < 1 and 0 < high_q < .5 and .5 < water_q < 1
+            and np.isfinite(minimum_gap_db) and minimum_gap_db >= 0):
+        raise ValueError('Invalid hybrid quantiles or minimum gap')
+    f, s = np.asarray(first_mode, float), np.asarray(second_mode, float)
+    if (f.shape != (3,) or s.shape != (3,) or
+            not np.isfinite(np.r_[f,s]).all() or
+            min(f[1],s[1],f[2],s[2]) <= 0):
+        audit['reason']='invalid_gaussian_parameters'
+        return threshold, audit
+    if f[0] > s[0]: f,s=s,f
+    if f[0] == s[0]:
+        audit['reason']='equal_means'
+        return threshold, audit
+    b=np.asarray(bounds,float)
+    if b.shape != (2,) or not np.isfinite(b).all() or b[0] >= b[1]:
+        raise ValueError('Invalid dB threshold bounds')
+    low_edge=float(norm.ppf(low_q,loc=f[0],scale=f[1]))
+    high_edge=float(norm.ppf(high_q,loc=s[0],scale=s[1]))
+    gap=high_edge-low_edge
+    candidate=float(norm.ppf(water_q,loc=f[0],scale=f[1]))
+    separated=bool(gap > minimum_gap_db)
+    audit.update(low_mean=float(f[0]),low_sigma=float(f[1]),
+                 high_mean=float(s[0]),high_sigma=float(s[1]),
+                 separation_low_q=low_q,separation_high_q=high_q,water_q=water_q,
+                 minimum_gap_db=minimum_gap_db,low_edge_db=low_edge,
+                 high_edge_db=high_edge,separation_gap_db=gap,separated=separated,
+                 quantile_threshold_db=candidate)
+    if not separated:
+        return threshold,audit
+    audit.update(applied=True,method='low_gaussian_quantile')
+    # Check the rounded output too; rounding must not move it outside bounds.
+    rounded=float(np.round(candidate/.01)*.01)
+    if not (b[0] <= candidate <= b[1] and b[0] <= rounded <= b[1]):
+        audit.update(reason='quantile_outside_bounds',threshold_after=float('nan'))
+        return float('nan'),audit
+    audit.update(reason='separated',threshold_after=candidate)
+    return candidate,audit
+# END DSWX FINAL HYBRID POLICY v1
