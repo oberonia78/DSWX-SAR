@@ -41,12 +41,14 @@ band_assign_value_dict = {
     'inundated_vegetation_conf': 5,
     'dark_land_mask': 6,
     'landcover_mask': 7,
+    'coherence_mask': 9,
     'wetland_nonwater': 30,
     'wetland_water': 31,
     'wetland_bright_water_fill': 32,
     'wetland_inundated_veg': 35,
     'wetland_dark_land_mask': 36,
     'wetland_landcover_mask': 37,
+    'wetland_coherence_mask': 39,
     'hand_mask': 250,
     'layover_shadow_mask': 251,
     'ocean_mask': 254,
@@ -89,6 +91,8 @@ collapse_wtr_classes_dict = {
         band_assign_value_dict['ocean_mask'],
     band_assign_value_dict['partial_water']:
         band_assign_value_dict['water'],
+    band_assign_value_dict['coherence_mask']:
+        band_assign_value_dict['nonwater'],
     }
 
 logger = logging.getLogger('dswx_sar')
@@ -134,6 +138,15 @@ def get_interpreted_dswx_s1_ctable():
     # Yellow - Landcover mask
     dswx_ctable.SetColorEntry(band_assign_value_dict['landcover_mask'],
                               (200, 200, 50))
+    # Magenta: water rejected by coherence
+    dswx_ctable.SetColorEntry(
+        band_assign_value_dict['coherence_mask'],
+        (255, 0, 255),
+    )
+    dswx_ctable.SetColorEntry(
+        band_assign_value_dict['wetland_coherence_mask'],
+        (160, 0, 160),       # dark magenta
+    )
     # light gray - Hand mask
     dswx_ctable.SetColorEntry(band_assign_value_dict['hand_mask'],
                               (200, 200, 200))
@@ -241,6 +254,14 @@ def get_interpreted_dswx_ni_conf_ctable():
     # Yellow - Landcover mask
     dswx_ctable.SetColorEntry(band_assign_value_dict['landcover_mask'],
                               (200, 200, 50))
+    dswx_ctable.SetColorEntry(
+        band_assign_value_dict['coherence_mask'],
+        (255, 0, 255),
+    )
+    dswx_ctable.SetColorEntry(
+        band_assign_value_dict['wetland_coherence_mask'],
+        (160, 0, 160),
+    )
     # light gray - Hand mask
     dswx_ctable.SetColorEntry(band_assign_value_dict['hand_mask'],
                               (200, 200, 200))

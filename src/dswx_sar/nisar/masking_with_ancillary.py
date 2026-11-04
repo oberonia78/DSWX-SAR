@@ -266,6 +266,7 @@ def run(cfg):
     if gunw_coherence.enabled(cfg, 'landcover_mask'):
         refined_water = os.path.join(outputdir, f'refine_landcover_binary_{pol_str}.tif')
         gunw_coherence.mask_water(cfg, refined_water, landcover_path)
+        
     t_all_elapsed = time.time() - t_all
     logger.info("successfully ran landcover masking in "
                 f"{t_all_elapsed:.3f} seconds")

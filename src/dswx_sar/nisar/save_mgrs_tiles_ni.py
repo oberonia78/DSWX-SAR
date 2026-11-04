@@ -42,6 +42,7 @@ from dswx_sar.common._save_mgrs_tiles import (
     get_bounding_box_from_mgrs_tile_db,
     get_intersecting_mgrs_tiles_list,
     merge_pol_layers)
+from dswx_sar.nisar import gunw_coherence
 
 logger = logging.getLogger('dswx_sar')
 
@@ -671,6 +672,72 @@ def run(cfg):
         value=0
     )
 
+    coherence_removed = None
+
+    if (
+        dswx_workflow == 'opera_dswx_ni'
+        and gunw_coherence.enabled(cfg, 'landcover_mask')
+    ):
+
+        if merge_layer_flag:
+            coherence_pol_keys = [
+                '_'.join(pol_set1),
+                '_'.join(pol_set2),
+            ]
+        else:
+            coherence_pol_keys = [
+                '_'.join(processing_cfg.polarizations),
+            ]
+
+        coherence_pol_keys = list(dict.fromkeys(coherence_pol_keys))
+
+        removal_paths = [
+            os.path.join(
+                scratch_dir,
+                f'gunw_coherence_removed_water_{key}.tif',
+            )
+            for key in coherence_pol_keys
+        ]
+
+        missing_paths = [
+            path for path in removal_paths
+            if not os.path.isfile(path)
+        ]
+        if missing_paths:
+            raise FileNotFoundError(
+                "Coherence removal mask가 없습니다. "
+                "제거 mask 저장 코드를 수정한 뒤 ancillary masking과 "
+                "후속 단계를 다시 실행하세요:\n"
+                + '\n'.join(missing_paths)
+            )
+
+        if len(removal_paths) == 1:
+            coherence_removed_path = removal_paths[0]
+        else:
+            coherence_removed_path = os.path.join(
+                scratch_dir,
+                f'gunw_coherence_removed_water_{pol_str}.tif',
+            )
+
+            merge_pol_layers(
+                removal_paths,
+                coherence_removed_path,
+                nodata_value=0,
+                scratch_dir=scratch_dir,
+            )
+
+        removed_is_1 = _dswx_sar_util._make_block_source(
+            coherence_removed_path,
+            operation='eq',
+            value=1,
+        )
+
+        coherence_removed = _dswx_sar_util._make_combined_mask(
+            'and',
+            removed_is_1,
+            water_is_0,
+        )
+
     no_data_raster = _dswx_sar_util._make_combined_mask(
         'or',
         nodata_from_file,
@@ -950,7 +1017,11 @@ def run(cfg):
                 high_ratio_and_nonwater,
                 wetland
             )
-
+            wetland_coherence_mask = _dswx_sar_util._make_combined_mask(
+                'and',
+                coherence_removed,
+                wetland,
+            )
         else:
             wetland_nonwater = None
             wetland_water = None
@@ -959,7 +1030,7 @@ def run(cfg):
             wetland_dark_land_mask = None
             wetland_landcover_mask = None
             inundated_vegetation_conf = None
-
+            wetland_coherence_mask = None  # 추가
         # CONF product
         _dswx_sar_util.save_dswx_product_blockwise(
             water_is_1,
@@ -970,6 +1041,7 @@ def run(cfg):
             scratch_dir=scratch_dir,
             logger=logger,
             landcover_mask=landcover_mask,
+            coherence_mask=coherence_removed,
             bright_water_fill=bright_water_mask,
             dark_land_mask=dark_land_mask,
             inundated_vegetation_conf=inundated_vegetation_conf,
@@ -979,6 +1051,7 @@ def run(cfg):
             wetland_inundated_veg=wetland_inundated_veg,
             wetland_dark_land_mask=wetland_dark_land_mask,
             wetland_landcover_mask=wetland_landcover_mask,
+            wetland_coherence_mask=wetland_coherence_mask,
             layover_shadow_mask=layover_shadow_mask,
             hand_mask=hand_mask,
             ocean_mask=ocean_mask,
