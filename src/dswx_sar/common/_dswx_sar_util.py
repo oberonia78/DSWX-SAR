@@ -254,6 +254,14 @@ def get_interpreted_dswx_ni_conf_ctable():
     # Yellow - Landcover mask
     dswx_ctable.SetColorEntry(band_assign_value_dict['landcover_mask'],
                               (200, 200, 50))
+    dswx_ctable.SetColorEntry(
+        band_assign_value_dict['coherence_mask'],
+        (255, 0, 255),
+    )
+    dswx_ctable.SetColorEntry(
+        band_assign_value_dict['wetland_coherence_mask'],
+        (160, 0, 160),
+    )
     # light gray - Hand mask
     dswx_ctable.SetColorEntry(band_assign_value_dict['hand_mask'],
                               (200, 200, 200))

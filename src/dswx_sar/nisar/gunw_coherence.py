@@ -622,47 +622,46 @@ def mask_water(cfg, water_path, landcover_path, record=True):
         dst.update_tags(**water.tags())
         diagnostics = {}
         previous_removed = None
+        diagnostics = {}
+        previous_removed = None
+
+        # record=False: 후속 단계에서 최초 제거 이력까지 유지
+        if not record and os.path.exists(diagnostic_paths['removed']):
+            previous_removed = stack.enter_context(
+                rasterio.open(diagnostic_paths['removed'])
+            )
+
+            if (
+                previous_removed.shape != water.shape
+                or previous_removed.transform != water.transform
+                or previous_removed.crs != water.crs
+            ):
+                raise ValueError(
+                    'Previous coherence removal mask and water grids differ.'
+                )
+
+        # 모든 방법에서 제거 mask를 항상 저장
+        diagnostic_keys = ['removed']
+
+        # support/coverage는 raw-support 방법에서만 계산됨
         if use_raw and settings['save_diagnostics']:
-            diagnostics = {}
-            previous_removed = None
+            diagnostic_keys.extend(['support', 'coverage'])
 
-            # record=False: 후속 단계에서 최초 제거 이력까지 유지
-            if not record and os.path.exists(diagnostic_paths['removed']):
-                previous_removed = stack.enter_context(
-                    rasterio.open(diagnostic_paths['removed'])
+        for key in diagnostic_keys:
+            diagnostic_profile = profile.copy()
+            diagnostic_profile.update(
+                count=1,
+                dtype='uint8' if key == 'removed' else 'float32',
+                nodata=255 if key == 'removed' else np.nan,
+            )
+
+            diagnostics[key] = stack.enter_context(
+                rasterio.open(
+                    os.path.join(temporary, key + '.tif'),
+                    'w',
+                    **diagnostic_profile,
                 )
-
-                if (
-                    previous_removed.shape != water.shape
-                    or previous_removed.transform != water.transform
-                    or previous_removed.crs != water.crs
-                ):
-                    raise ValueError(
-                        'Previous coherence removal mask and water grids differ.'
-                    )
-
-            # 모든 방법에서 제거 mask를 항상 저장
-            diagnostic_keys = ['removed']
-
-            # support/coverage는 raw-support 방법에서만 계산됨
-            if use_raw and settings['save_diagnostics']:
-                diagnostic_keys.extend(['support', 'coverage'])
-
-            for key in diagnostic_keys:
-                diagnostic_profile = profile.copy()
-                diagnostic_profile.update(
-                    count=1,
-                    dtype='uint8' if key == 'removed' else 'float32',
-                    nodata=255 if key == 'removed' else np.nan,
-                )
-
-                diagnostics[key] = stack.enter_context(
-                    rasterio.open(
-                        os.path.join(temporary, key + '.tif'),
-                        'w',
-                        **diagnostic_profile,
-                    )
-                )
+            )
         for _, window in water.block_windows(1):
             values = water.read(1, window=window)
             row, col = int(window.row_off), int(window.col_off)
