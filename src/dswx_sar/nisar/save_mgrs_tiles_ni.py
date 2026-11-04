@@ -671,6 +671,12 @@ def run(cfg):
         value=0
     )
 
+    coherence_removed = _dswx_sar_util._make_block_source(
+        coherence_removed_path,
+        operation='eq',
+        value=1,
+    )
+
     no_data_raster = _dswx_sar_util._make_combined_mask(
         'or',
         nodata_from_file,
@@ -950,7 +956,11 @@ def run(cfg):
                 high_ratio_and_nonwater,
                 wetland
             )
-
+            wetland_coherence_mask = _dswx_sar_util._make_combined_mask(
+                'and',
+                coherence_removed,
+                wetland,
+            )
         else:
             wetland_nonwater = None
             wetland_water = None
@@ -970,6 +980,7 @@ def run(cfg):
             scratch_dir=scratch_dir,
             logger=logger,
             landcover_mask=landcover_mask,
+            coherence_mask=coherence_removed,
             bright_water_fill=bright_water_mask,
             dark_land_mask=dark_land_mask,
             inundated_vegetation_conf=inundated_vegetation_conf,
@@ -979,6 +990,7 @@ def run(cfg):
             wetland_inundated_veg=wetland_inundated_veg,
             wetland_dark_land_mask=wetland_dark_land_mask,
             wetland_landcover_mask=wetland_landcover_mask,
+            wetland_coherence_mask=wetland_coherence_mask,
             layover_shadow_mask=layover_shadow_mask,
             hand_mask=hand_mask,
             ocean_mask=ocean_mask,
