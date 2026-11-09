@@ -436,24 +436,43 @@ coherence_fuzzy:
 
 coherence_filter:
     enabled: bool(required=False)
-    method: enum('bregman', 'magnitude_mean', 'complex_mean', required=False)
+    method: enum('bregman', 'magnitude_mean', 'complex_mean', 'adaptive_guided', required=False)
     block_size: int(min=1, required=False)
     block_pad: int(min=1, required=False)
     window_size: int(min=3, required=False)
     min_valid_fraction: num(min=0, max=1, required=False)
     bregman: include('coherence_bregman', required=False)
+    adaptive_guided: include('coherence_adaptive_guided', required=False)
 
 coherence_bregman:
     lambda_value: num(min=0, required=False)
     max_num_iter: int(min=1, required=False)
     eps: num(min=0, required=False)
 
+coherence_adaptive_guided:
+    guide_polarization: enum('HH', 'VV', required=False)
+    guide_units: enum('linear', 'db', required=False)
+    small_size: int(min=3, required=False)
+    large_size: int(min=3, required=False)
+    eps: num(min=0, required=False)
+    edge_scale: num(min=0, required=False)
+    min_valid_fraction: num(min=0, max=1, required=False)
+    guide_limits: list(num(), min=2, max=2, required=False)
+
 coherence_landcover_mask:
     enabled: bool(required=False)
-    method: enum('threshold', 'raw_support', 'raw_support_pooled', required=False)
+    method: enum('threshold', 'raw_support', 'raw_support_pooled', 'db_weight', required=False)
+    db_weight: include('coherence_db_weight', required=False)
     threshold: num(min=0, max=1, required=False)
     worldcover_classes: list(enum(10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100), min=1, required=False)
     window_size: int(min=3, required=False)
     support_fraction: num(min=0, max=1, required=False)
     min_valid_fraction: num(min=0, max=1, required=False)
     save_diagnostics: bool(required=False)
+
+coherence_db_weight:
+    backscatter_polarization: enum('HH', 'VV', required=False)
+    backscatter_anchors: list(num(), min=2, max=2, required=False)
+    coherence_thresholds: list(num(min=0, max=1), min=2, max=2, required=False)
+    transition_width: num(min=0, required=False)
+    membership_threshold: num(min=0, max=1, required=False)
