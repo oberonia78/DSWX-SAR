@@ -59,6 +59,17 @@ runconfig:
                     lambda_value: 10.0
                     max_num_iter: 250
                     eps: 0.0001
+
+                adaptive_guided:
+                    guide_polarization: HH
+                    guide_units: linear
+                    small_size: 3
+                    large_size: 9
+                    eps: 0.0009
+                    edge_scale: 0.05
+                    min_valid_fraction: 0.5
+                    guide_limits: [-30, -5]
+
             fuzzy:
                 enabled: False
                 # Low coherence -> water membership 1; high -> 0 (Z curve).
@@ -77,6 +88,12 @@ runconfig:
                 support_fraction: 0.7
                 min_valid_fraction: 0.5
                 save_diagnostics: True
+                db_weight:
+                    backscatter_polarization: HH
+                    backscatter_anchors: [-20.0, -8.0]
+                    coherence_thresholds: [0.4, 0.7]
+                    transition_width: 0.1
+                    membership_threshold: 0.8
 
         ocean_mask:
             # Flag to apply ocean mask

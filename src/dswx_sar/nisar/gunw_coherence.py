@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import rasterio
+from scipy.ndimage import uniform_filter
 from rasterio.enums import Resampling
 from rasterio.transform import Affine
 from rasterio.vrt import WarpedVRT
@@ -124,22 +125,63 @@ def raw_raster_path(cfg):
 
 def landcover_mask_options(options):
     """Validate the optional raw-coherence neighborhood rejection method."""
+
     result = {'method': getattr(options, 'method', 'threshold')}
-    if result['method'] not in ('threshold', *RAW_SUPPORT_METHODS):
+
+    if result['method'] not in ('threshold', 'db_weight', *RAW_SUPPORT_METHODS):
         raise ValueError('landcover_mask.method must be threshold, raw_support, or raw_support_pooled.')
+
     if not np.isfinite(options.threshold) or not 0 <= options.threshold <= 1:
         raise ValueError('landcover_mask.threshold must be within [0,1].')
+
     if result['method'] in RAW_SUPPORT_METHODS:
         result.update(window_size=getattr(options, 'window_size', 3),
                       support_fraction=getattr(options, 'support_fraction', .7),
                       min_valid_fraction=getattr(options, 'min_valid_fraction', .5),
                       save_diagnostics=getattr(options, 'save_diagnostics', True))
         size = result['window_size']
+
         if isinstance(size, bool) or not isinstance(size, (int, np.integer)) or size < 3 or size % 2 != 1:
             raise ValueError('landcover_mask.window_size must be an odd integer >= 3.')
         for key in ('support_fraction', 'min_valid_fraction'):
             if not np.isfinite(result[key]) or not 0 < result[key] <= 1:
                 raise ValueError(f'landcover_mask.{key} must be within (0,1].')
+
+    if result['method'] == 'db_weight':
+        db_weight = getattr(options, 'db_weight', None)
+        result.update(
+            backscatter_polarization=getattr(
+                db_weight, 'backscatter_polarization', 'HH'
+            ),
+            backscatter_anchors=list(getattr(
+                db_weight, 'backscatter_anchors', (-20.0, -8.0)
+            )),
+            coherence_thresholds=list(getattr(
+                db_weight, 'coherence_thresholds', (0.4, 0.7)
+            )),
+            transition_width=getattr(db_weight, 'transition_width', 0.1),
+            membership_threshold=getattr(db_weight, 'membership_threshold', 0.8),
+        )
+
+        anchors = result['backscatter_anchors']
+        thresholds = result['coherence_thresholds']
+
+        if len(anchors) != 2 or not np.isfinite(anchors).all() or anchors[0] >= anchors[1]:
+            raise ValueError('db_weight.backscatter_anchors must be two increasing dB values.')
+
+        if len(thresholds) != 2 or not 0 <= thresholds[0] <= thresholds[1] <= 1:
+            raise ValueError('db_weight.coherence_thresholds must be ordered within [0, 1].')
+        width = result['transition_width']
+
+        if not np.isfinite(width) or width <= 0:
+            raise ValueError('db_weight.transition_width must be finite and positive.')
+
+        if not 0 < result['membership_threshold'] <= 1:
+            raise ValueError('db_weight.membership_threshold must be within (0, 1].')
+
+        if result['backscatter_polarization'] not in ('HH', 'VV'):
+            raise ValueError('db_weight.backscatter_polarization must be HH or VV.')
+
     return result
 
 
@@ -173,8 +215,37 @@ def coherence_filter_options(options):
         'block_size': getattr(config, 'block_size', 1024),
         'block_pad': getattr(config, 'block_pad', 32),
     }
-    if result['method'] not in ('bregman', 'magnitude_mean', 'complex_mean'):
+    if result['method'] not in ('bregman', 'magnitude_mean', 'complex_mean', 'adaptive_guided'):
         raise ValueError('Unknown gunw_coherence.filter.method: ' + result['method'])
+    if result['method'] == 'adaptive_guided':
+        guided = getattr(config, 'adaptive_guided', None)
+        result.update(
+            guide_polarization=getattr(guided, 'guide_polarization', 'HH'),
+            guide_units=getattr(guided, 'guide_units', 'linear'),
+            small_size=getattr(guided, 'small_size', 3),
+            large_size=getattr(guided, 'large_size', 9),
+            eps=getattr(guided, 'eps', 0.03**2),
+            edge_scale=getattr(guided, 'edge_scale', 0.05),
+            min_valid_fraction=getattr(guided, 'min_valid_fraction', 0.5),
+            guide_limits=list(getattr(guided, 'guide_limits', (-30, -5))),
+        )
+        _validate_guided_parameters(
+            result['small_size'], result['large_size'], result['eps'],
+            result['edge_scale'], result['min_valid_fraction'],
+            result['guide_limits'])
+        for key in ('block_size', 'block_pad'):
+            value = result[key]
+            minimum = 1 if key == 'block_size' else 0
+            if (isinstance(value, bool)
+                    or not isinstance(value, (int, np.integer))
+                    or value < minimum):
+                raise ValueError(f'{key} must be an integer >= {minimum}.')
+        if result['guide_units'] not in ('linear', 'db'):
+            raise ValueError('guide_units must be linear or db.')
+        if result['guide_polarization'] not in ('HH', 'VV'):
+            raise ValueError('guide_polarization must be HH or VV.')
+        return result
+
     if result['method'] == 'bregman':
         bregman = getattr(config, 'bregman', None)
         result.update(lambda_value=getattr(bregman, 'lambda_value', 10.0),
@@ -382,6 +453,8 @@ def extract_coherence(path, output, options, gcov_paths, lines_per_block,
         if data.shape != shape:
             raise ValueError(f'GUNW coherence coordinates/shape disagree: {path}')
         filtering = coherence_filter_options(options)
+        if filtering.get('method') == 'adaptive_guided':
+            raise ValueError('adaptive_guided must run through mosaic(), after grid alignment.')
         interferogram = None
         if filtering['enabled'] or require_native_20m:
             if not (np.isclose(transform.a, 20, rtol=0, atol=.1) and
@@ -460,11 +533,25 @@ def _mosaic_native_coherence(native_paths, reference_path, output_path, options,
             raise ValueError('Supplied GUNW coherence has no valid overlap with the GCOV mosaic.')
 
 
-def mosaic(cfg, reference_path):
+def mosaic(cfg, reference_path, guide_path=None):
     """Resample each GUNW directly to the exact GCOV mosaic grid, then merge."""
     if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask')):
         return
     options = cfg.groups.processing.gunw_coherence
+    filtering = coherence_filter_options(options)
+    guided = filtering.get('method') == 'adaptive_guided'
+    guided_applied = False
+    native_options = options
+    if guided:
+        native_options = copy.deepcopy(options)
+        native_options.filter = SimpleNamespace(enabled=False)
+        if guide_path is None:
+            guide_path = os.path.join(
+                cfg.groups.product_path_group.scratch_path,
+                f'{cfg.groups.processing.mosaic.mosaic_prefix}_{filtering["guide_polarization"]}.tif')
+        guide_path = os.path.abspath(guide_path)
+        if not os.path.isfile(guide_path):
+            raise FileNotFoundError(f'Missing GCOV guide mosaic: {guide_path}')
     scratch = cfg.groups.product_path_group.scratch_path
     inputs = cfg.groups.input_file_group
     _, _, matches = split_inputs(inputs.input_file_path + inputs.gunw_file_path)
@@ -477,7 +564,7 @@ def mosaic(cfg, reference_path):
         raw_paths = []
         for index, path in enumerate(inputs.gunw_file_path):
             native = os.path.join(temporary, f'{index}.tif')
-            pol = extract_coherence(path, native, options, matches[path],
+            pol = extract_coherence(path, native, native_options, matches[path],
                                     cfg.groups.processing.mosaic.read_row_blk_size,
                                     require_native_20m=use_raw)
             native_paths.append(native)
@@ -487,7 +574,7 @@ def mosaic(cfg, reference_path):
                             'gcov': matches[path], 'filtered': filtered})
             if use_raw:
                 raw_native = native
-                if coherence_filter_options(options)['enabled']:
+                if coherence_filter_options(native_options)['enabled']:
                     raw_native = os.path.join(temporary, f'{index}_raw.tif')
                     raw_options = copy.deepcopy(options)
                     raw_options.filter = SimpleNamespace(enabled=False)
@@ -499,8 +586,14 @@ def mosaic(cfg, reference_path):
                                  filtered=any(item['filtered'] for item in records))
         if use_raw:
             _mosaic_native_coherence(raw_paths, reference_path, raw_raster_path(cfg), options, raw=True)
+        if guided:
+            guided_output = os.path.join(temporary, 'guided_coherence.tif')
+            guided_applied = write_guided_coherence(
+                raster_path(cfg), guide_path, guided_output, filtering)
+            os.replace(guided_output, raster_path(cfg))
     with open(_status_path(cfg), 'w') as stream:
         json.dump({'sources': records, 'options': _mosaic_options(cfg),
+                   'guided_filter_applied': guided_applied,
                    'fuzzy': {}, 'landcover_mask': {}}, stream, indent=2)
     logger.info('GUNW coherence aligned to GCOV: %s', raster_path(cfg))
 
@@ -541,6 +634,51 @@ def combine_fuzzy(original, intensity_membership, coherence, options, zmf):
     updated = intensity_membership * 0.5 + (ancillary * 3 + membership) / 4 * 0.5
     result[valid] = updated[valid]
     return result
+
+
+def coherent_land_membership(
+    coherence,
+    backscatter_db,
+    backscatter_anchors=(-16.0, -8.0),
+    coherence_thresholds=(0.3, 0.6),
+    transition_width=0.1,
+):
+    """Backscatter-dependent coherence evidence; output within [0, 1]."""
+    coherence = np.asarray(coherence, dtype=float)
+    backscatter_db = np.asarray(backscatter_db, dtype=float)
+
+    if coherence.shape != backscatter_db.shape:
+        raise ValueError("두 입력의 shape이 같아야 합니다.")
+    if transition_width <= 0:
+        raise ValueError("transition_width는 양수여야 합니다.")
+
+    # Between anchors: linear interpolation.
+    # Outside anchors: retain the nearest endpoint threshold.
+    threshold = np.interp(
+        backscatter_db,
+        backscatter_anchors,
+        coherence_thresholds,
+    )
+
+    # threshold - width -> 0
+    # threshold         -> 0.5
+    # threshold + width -> 1
+    t = np.clip(
+        (coherence - threshold + transition_width)
+        / (2 * transition_width),
+        0,
+        1,
+    )
+    membership = t**2 * (3 - 2 * t)
+
+    valid = (
+        np.isfinite(coherence)
+        & (coherence >= 0)
+        & (coherence <= 1)
+        & np.isfinite(backscatter_db)
+    )
+
+    return np.where(valid, membership, np.nan).astype("float32")
 
 
 def high_coherence_mask(coherence, landcover, options):
@@ -593,6 +731,7 @@ def mask_water(cfg, water_path, landcover_path, record=True):
     """Remove selected coherent land pixels from the intermediate water map."""
     options = cfg.groups.processing.gunw_coherence.landcover_mask
     settings = landcover_mask_options(options)
+    use_db_weight = settings['method'] == 'db_weight'
     use_raw = settings['method'] in RAW_SUPPORT_METHODS
     check_grid(cfg, water_path, raw=use_raw)
     used = False
@@ -612,6 +751,19 @@ def mask_water(cfg, water_path, landcover_path, record=True):
         water = stack.enter_context(rasterio.open(water_path))
         landcover = stack.enter_context(rasterio.open(landcover_path))
         coherence = stack.enter_context(rasterio.open(raw_raster_path(cfg) if use_raw else raster_path(cfg)))
+        if use_db_weight:
+            scratch = cfg.groups.product_path_group.scratch_path
+            prefix = cfg.groups.processing.mosaic.mosaic_prefix
+            pol = settings['backscatter_polarization']
+            gcov_path = os.path.join(scratch, f'{prefix}_{pol}.tif')
+            gcov = stack.enter_context(rasterio.open(gcov_path))
+
+            if (
+                gcov.shape != water.shape
+                or gcov.transform != water.transform
+                or gcov.crs != water.crs
+            ):
+                raise ValueError(f'GCOV mosaic and water mask grids differ: {gcov_path}')
         if (landcover.shape != water.shape or landcover.transform != water.transform or
                 landcover.crs != water.crs):
             raise ValueError('Landcover and intermediate water grids differ.')
@@ -620,8 +772,6 @@ def mask_water(cfg, water_path, landcover_path, record=True):
         profile.update(driver='GTiff', BIGTIFF='IF_SAFER')
         dst = stack.enter_context(rasterio.open(output, 'w', **profile))
         dst.update_tags(**water.tags())
-        diagnostics = {}
-        previous_removed = None
         diagnostics = {}
         previous_removed = None
 
@@ -674,10 +824,36 @@ def mask_water(cfg, water_path, landcover_path, record=True):
             lc = landcover.read(1, window=read_window)
             if use_raw:
                 mask, support, coverage = coherence_support_mask(coh, lc, options)
+
+            elif use_db_weight:
+                power = gcov.read(1, window=read_window, masked=True)
+                power = power.astype(np.float32).filled(np.nan)
+
+                backscatter_db = np.full(power.shape, np.nan, dtype=np.float32)
+                valid_power = np.isfinite(power) & (power > 0)
+                backscatter_db[valid_power] = 10.0 * np.log10(power[valid_power])
+
+                membership = coherent_land_membership(
+                    coherence=coh,
+                    backscatter_db=backscatter_db,
+                    backscatter_anchors=settings['backscatter_anchors'],
+                    coherence_thresholds=settings['coherence_thresholds'],
+                    transition_width=settings['transition_width'],
+                )
+
+                mask = (
+                    np.isfinite(membership)
+                    & (membership >= settings['membership_threshold'])
+                    & np.isin(lc, options.worldcover_classes)
+                )
+
             else:
                 mask = high_coherence_mask(coh, lc, options)
             valid = (np.isfinite(coh[inner]) & (coh[inner] >= 0) & (coh[inner] <= 1) &
                      np.isin(lc[inner], options.worldcover_classes) & (values == 1))
+            if use_db_weight:
+                valid &= np.isfinite(membership[inner])
+
             used |= bool(valid.any())
             removed = (values == 1) & mask[inner]
             removed_count += int(removed.sum())
@@ -735,8 +911,10 @@ def metadata(cfg, gcov_paths):
     filtering = coherence_filter_options(options)
     mask_settings = landcover_mask_options(options.landcover_mask)
     raw_support = bool(masking and mask_settings['method'] in RAW_SUPPORT_METHODS)
-    filter_applied = bool((fuzzy or (masking and not raw_support)) and
-                          any(item.get('filtered', False) for item in sources))
+    filter_applied = bool(
+        (fuzzy or (masking and not raw_support)) and
+        (any(item.get('filtered', False) for item in sources) or
+         (sources and status.get('guided_filter_applied', False))))
     result.update({
         'GUNW_COHERENCE_USED': fuzzy or masking,
         'GUNW_COHERENCE_FUZZY_USED': fuzzy,
@@ -760,8 +938,150 @@ def metadata(cfg, gcov_paths):
     return result
 
 
+
+def _validate_guided_parameters(small_size, large_size, eps, edge_scale,
+                                min_valid_fraction, guide_limits):
+    for name, value in (('small_size', small_size), ('large_size', large_size)):
+        if (isinstance(value, bool) or not isinstance(value, (int, np.integer))
+                or value < 3 or value % 2 != 1):
+            raise ValueError(f'{name} must be an odd integer >= 3.')
+    if large_size < small_size:
+        raise ValueError('large_size must be >= small_size.')
+    for name, value in (('eps', eps), ('edge_scale', edge_scale)):
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f'{name} must be finite and > 0.')
+    if not np.isfinite(min_valid_fraction) or not 0 < min_valid_fraction <= 1:
+        raise ValueError('min_valid_fraction must be within (0,1].')
+    if (len(guide_limits) != 2 or not np.isfinite(guide_limits).all()
+            or guide_limits[1] <= guide_limits[0]):
+        raise ValueError('guide_limits must contain two increasing finite values.')
+
+
+def adaptive_guided_coherence(coherence, guide_db, small_size=3, large_size=9,
+                             eps=0.03**2, edge_scale=0.05,
+                             min_valid_fraction=0.5, guide_limits=(-30, -5),
+                             return_applied=False):
+    """GCOV-guided smoothing; preserve raw values without sufficient support.
+
+    Inputs must share a 2-D grid. Window sizes are measured on that grid.
+    Returns filtered coherence and large-window weight. With return_applied,
+    also returns a boolean mask of pixels where a supported model was used.
+    """
+    _validate_guided_parameters(small_size, large_size, eps, edge_scale,
+                               min_valid_fraction, guide_limits)
+    coherence = np.asarray(coherence, dtype=np.float64)
+    guide_db = np.asarray(guide_db, dtype=np.float64)
+    if coherence.ndim != 2 or coherence.shape != guide_db.shape:
+        raise ValueError('coherence and guide_db must have matching 2-D shapes.')
+    raw_valid = np.isfinite(coherence) & (coherence >= 0) & (coherence <= 1)
+    valid = raw_valid & np.isfinite(guide_db)
+    lo, hi = guide_limits
+    # Replace invalid inputs before arithmetic, preventing NaN contamination.
+    guide = np.where(valid, np.clip((guide_db-lo)/(hi-lo), 0, 1), 0)
+    values = np.where(valid, coherence, 0)
+
+    def box(array, size):
+        return uniform_filter(array, size=size, mode='constant', cval=0.0)
+
+    def local_model(size):
+        coverage = box(valid.astype(np.float64), size)
+        denominator = np.maximum(coverage, 1e-12)
+        def mean(array):
+            return box(np.where(valid, array, 0), size) / denominator
+        mean_i, mean_p = mean(guide), mean(values)
+        var_i = np.maximum(mean(guide*guide) - mean_i**2, 0)
+        cov_ip = mean(guide*values) - mean_i*mean_p
+        a = cov_ip / (var_i + eps)
+        b = mean_p - a*mean_i
+        supported = valid & (coverage >= min_valid_fraction)
+        coefficient_coverage = box(supported.astype(np.float64), size)
+        coefficient_denominator = np.maximum(coefficient_coverage, 1e-12)
+        mean_a = box(np.where(supported, a, 0), size)/coefficient_denominator
+        mean_b = box(np.where(supported, b, 0), size)/coefficient_denominator
+        usable = (supported & (coefficient_coverage >= min_valid_fraction))
+        estimate = np.where(usable, mean_a*guide + mean_b, values)
+        return estimate, mean_p, var_i, usable
+
+    small, pilot, variance, small_ok = local_model(small_size)
+    large, _, _, large_ok = local_model(large_size)
+    homogeneity = edge_scale**2 / (variance + edge_scale**2)
+    weight = homogeneity * (1 - np.clip(pilot, 0, 1))**2
+    weight = np.where(small_ok & large_ok, weight, 0)
+    estimate = (1-weight)*small + weight*large
+    outside = small_ok & ((estimate < 0) | (estimate > 1))
+    logger.debug('Guided filter out-of-range before clipping: %d pixels', outside.sum())
+    result = np.where(small_ok, np.clip(estimate, 0, 1), coherence)
+    result[~raw_valid] = np.nan
+    weight[~valid] = np.nan
+    outputs = (result.astype(np.float32), weight.astype(np.float32))
+    return (*outputs, small_ok) if return_applied else outputs
+
+
+def write_guided_coherence(coherence_path, guide_path, output_path, settings):
+    """Apply guided filtering in padded blocks on the aligned mosaic grid.
+
+    linear means linear power, converted with 10*log10, not amplitude.
+    Output must be a different file from both inputs.
+    """
+    output_real = os.path.realpath(output_path)
+    if output_real in (os.path.realpath(coherence_path), os.path.realpath(guide_path)):
+        raise ValueError('Guided output must differ from both input files.')
+    size = settings['block_size']
+    if isinstance(size, bool) or not isinstance(size, (int, np.integer)) or size < 1:
+        raise ValueError('block_size must be a positive integer.')
+    _validate_guided_parameters(
+        settings['small_size'], settings['large_size'], settings['eps'],
+        settings['edge_scale'], settings['min_valid_fraction'], settings['guide_limits'])
+    pad = max(settings['block_pad'], settings['large_size'] - 1)
+    units = settings['guide_units']
+    if units not in ('linear', 'db'):
+        raise ValueError('guide_units must be linear or db.')
+    with rasterio.open(coherence_path) as src, rasterio.open(guide_path) as guide_src:
+        if (src.shape != guide_src.shape or src.crs != guide_src.crs
+                or src.transform != guide_src.transform):
+            raise ValueError('Coherence and GCOV guide must have identical grids.')
+        profile = src.profile.copy()
+        profile.update(driver='GTiff', count=1, dtype='float32',
+                       nodata=np.nan, BIGTIFF='IF_SAFER')
+        applied = False
+        with rasterio.open(output_path, 'w', **profile) as dst:
+            dst.update_tags(**src.tags())
+            for row in range(0, src.height, size):
+                bottom = min(row+size, src.height)
+                for col in range(0, src.width, size):
+                    right = min(col+size, src.width)
+                    r0, r1 = max(0, row-pad), min(src.height, bottom+pad)
+                    c0, c1 = max(0, col-pad), min(src.width, right+pad)
+                    read_window = Window(c0, r0, c1-c0, r1-r0)
+                    inner = (slice(row-r0, bottom-r0), slice(col-c0, right-c0))
+                    coh = src.read(1, window=read_window, masked=True).astype('float64').filled(np.nan)
+                    guide = guide_src.read(1, window=read_window, masked=True).astype('float64').filled(np.nan)
+                    if units == 'linear':
+                        guide_db = np.full(guide.shape, np.nan)
+                        valid = np.isfinite(guide) & (guide > 0)
+                        guide_db[valid] = 10*np.log10(guide[valid])
+                    else:
+                        guide_db = guide
+                    filtered, _, evaluated = adaptive_guided_coherence(
+                        coh, guide_db, small_size=settings['small_size'],
+                        large_size=settings['large_size'], eps=settings['eps'],
+                        edge_scale=settings['edge_scale'],
+                        min_valid_fraction=settings['min_valid_fraction'],
+                        guide_limits=settings['guide_limits'], return_applied=True)
+                    dst.write(filtered[inner], 1,
+                              window=Window(col, row, right-col, bottom-row))
+                    applied |= bool(evaluated[inner].any())
+            dst.update_tags(
+                GUNW_COHERENCE_FILTER_APPLIED=str(applied),
+                GUNW_COHERENCE_RAW_INPUT='False',
+                GUNW_COHERENCE_FILTER_SETTINGS=json.dumps(settings),
+                GUNW_COHERENCE_GUIDE=os.path.basename(guide_path),
+                GUNW_COHERENCE_FILTER_GRID='processing')
+    return applied
+
+
 def compare_filters(cfg, reference_path):
-    """Build six isolated 20 m variants and their paired histogram report.
+    """Build seven isolated coherence variants and their paired histogram report.
 
     This is an opt-in coherence comparison only: no fuzzy/classification
     stages are executed and the normal workflow mosaic is not overwritten.
@@ -776,6 +1096,15 @@ def compare_filters(cfg, reference_path):
     variants = [('raw_20m', None, 3), ('bregman', 'bregman', 3)]
     variants += [(f'{method}_{size}x{size}', method, size)
                  for method in ('magnitude_mean', 'complex_mean') for size in (3, 5)]
+    variants.append(('adaptive_guided', 'adaptive_guided', 3))
+    base_filter = getattr(cfg.groups.processing.gunw_coherence, 'filter', None)
+    guided_config = getattr(base_filter, 'adaptive_guided', None)
+    guide_pol = getattr(guided_config, 'guide_polarization', 'HH')
+    comparison_guide = os.path.abspath(os.path.join(
+        cfg.groups.product_path_group.scratch_path,
+        f'{cfg.groups.processing.mosaic.mosaic_prefix}_{guide_pol}.tif'))
+    if not os.path.isfile(comparison_guide):
+        raise FileNotFoundError(f'Missing GCOV guide for comparison: {comparison_guide}')
     paths = {}
     for name, method, window in variants:
         case = copy.deepcopy(cfg)
@@ -795,7 +1124,7 @@ def compare_filters(cfg, reference_path):
             if method != 'bregman':
                 options.filter.block_pad = max(getattr(options.filter, 'block_pad', 32), window // 2)
         logger.info('Building coherence comparison variant: %s', name)
-        mosaic(case, reference_path)
+        mosaic(case, reference_path, guide_path=comparison_guide if method == 'adaptive_guided' else None)
         paths[name] = raster_path(case)
 
     bins = np.linspace(0, 1, 101)
@@ -882,7 +1211,7 @@ if __name__ == '__main__':
 
     parser = _get_parser()
     parser.add_argument('--compare-filters', action='store_true',
-                        help='Build raw/Bregman/scalar/complex 3x3 and 5x5 coherence variants and histograms.')
+                        help='Build raw/Bregman/scalar/complex/guided coherence variants and histograms.')
     args = parser.parse_args()
     cfg = RunConfig.load_from_yaml(args.input_yaml[0], 'dswx_ni', args)
     _generate_log.configure_log_file(cfg.groups.log_file)
