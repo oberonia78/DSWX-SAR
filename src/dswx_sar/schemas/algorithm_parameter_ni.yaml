@@ -232,6 +232,8 @@ runconfig:
                 surface_ratio: num(min=0, required=False)
 
         inundated_vegetation:
+            method: enum('dual_pol_ratio', 'backscatter_coherence_contrast', required=False)
+            backscatter_coherence_contrast: include('bcc_iv', required=False)
             # 'auto' determine the inundated vegetation availability
             # based on available cross-polarizations
             enabled: enum(True, False, 'auto')
@@ -460,6 +462,7 @@ coherence_adaptive_guided:
     guide_limits: list(num(), min=2, max=2, required=False)
 
 coherence_landcover_mask:
+    worldcover_thresholds: list(include('worldcover_threshold_override'), required=False)
     enabled: bool(required=False)
     method: enum('threshold', 'raw_support', 'raw_support_pooled', 'db_weight', required=False)
     db_weight: include('coherence_db_weight', required=False)
@@ -476,3 +479,21 @@ coherence_db_weight:
     coherence_thresholds: list(num(min=0, max=1), min=2, max=2, required=False)
     transition_width: num(min=0, required=False)
     membership_threshold: num(min=0, max=1, required=False)
+
+bcc_iv:
+    detector: enum('contrast', 'rectangle', required=False)
+    input_units: enum('power', 'amplitude', required=False)
+    db_bounds: list(num(), min=2, max=2, required=False)
+    coherence_bounds: list(num(min=0, max=1), min=2, max=2, required=False)
+    polarization: enum('auto', 'HH', 'VV')
+    raw_coherence_limits: list(num(min=0, max=1), min=2, max=2)
+    filtered_coherence_limits: list(num(min=0, max=1), min=2, max=2)
+    backscatter_db_limits: list(num(), min=2, max=2)
+    backscatter_min: num(min=0, max=1)
+    contrast_threshold: num(min=0, max=1)
+    raw_coherence_max: num(min=0, max=1)
+    aoi_mask_path: str(required=False)
+
+worldcover_threshold_override:
+    class_code: enum(10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100)
+    threshold: num(min=0, max=1)

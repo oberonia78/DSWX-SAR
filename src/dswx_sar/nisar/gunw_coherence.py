@@ -126,7 +126,9 @@ def raw_raster_path(cfg):
 def landcover_mask_options(options):
     """Validate the optional raw-coherence neighborhood rejection method."""
 
-    result = {'method': getattr(options, 'method', 'threshold')}
+    result = {'method': getattr(options, 'method', 'threshold'),
+              'worldcover_thresholds': [vars(item) for item in getattr(options, 'worldcover_thresholds', [])]}
+    worldcover_threshold_map(np.empty((0, 0)), options)
 
     if result['method'] not in ('threshold', 'db_weight', *RAW_SUPPORT_METHODS):
         raise ValueError('landcover_mask.method must be threshold, raw_support, or raw_support_pooled.')
@@ -186,6 +188,9 @@ def landcover_mask_options(options):
 
 
 def _needs_raw_support(cfg):
+    from dswx_sar.nisar.backscatter_coherence_contrast import requested
+    if requested(cfg):
+        return True
     return (enabled(cfg, 'landcover_mask') and landcover_mask_options(
         cfg.groups.processing.gunw_coherence.landcover_mask)['method'] in RAW_SUPPORT_METHODS)
 
@@ -535,8 +540,14 @@ def _mosaic_native_coherence(native_paths, reference_path, output_path, options,
 
 def mosaic(cfg, reference_path, guide_path=None):
     """Resample each GUNW directly to the exact GCOV mosaic grid, then merge."""
-    if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask')):
+    from dswx_sar.nisar.backscatter_coherence_contrast import requested
+    use_bcc = requested(cfg)
+    if use_bcc and not cfg.groups.input_file_group.gunw_file_path:
+        raise ValueError('BCC IV requires matching GUNW inputs.')
+    if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask') or use_bcc):
         return
+    if use_bcc and not cfg.groups.processing.gunw_coherence.filter.enabled:
+        raise ValueError('BCC IV requires gunw_coherence.filter.enabled: true.')
     options = cfg.groups.processing.gunw_coherence
     filtering = coherence_filter_options(options)
     guided = filtering.get('method') == 'adaptive_guided'
@@ -681,8 +692,28 @@ def coherent_land_membership(
     return np.where(valid, membership, np.nan).astype("float32")
 
 
+def worldcover_threshold_map(landcover, options):
+    default = float(options.threshold)
+    if not np.isfinite(default) or not 0 <= default <= 1:
+        raise ValueError('Default coherence threshold must be within [0, 1].')
+    result = np.full(landcover.shape, default, dtype=float)
+    seen = set()
+    overrides = getattr(options, 'worldcover_thresholds', [])
+    if overrides and getattr(options, 'method', 'threshold') == 'db_weight':
+        raise ValueError('worldcover_thresholds cannot be combined with db_weight.')
+    for item in overrides:
+        code, value = item.class_code, float(item.threshold)
+        if code in seen or code not in options.worldcover_classes:
+            raise ValueError(f'Duplicate or unselected WorldCover class: {code}')
+        if not np.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError(f'Invalid coherence threshold for WorldCover {code}')
+        result[landcover == code] = value
+        seen.add(code)
+    return result
+
+
 def high_coherence_mask(coherence, landcover, options):
-    return (np.isfinite(coherence) & (coherence >= options.threshold) &
+    return (np.isfinite(coherence) & (coherence >= worldcover_threshold_map(landcover, options)) &
             (coherence <= 1) & np.isin(landcover, options.worldcover_classes))
 
 
@@ -701,6 +732,7 @@ def coherence_support_mask(coherence, landcover, options):
         raise ValueError('coherence_support_mask requires a raw support method.')
     if coherence.ndim != 2 or coherence.shape != landcover.shape:
         raise ValueError('Raw coherence and landcover must have matching 2-D shapes.')
+    threshold_map = worldcover_threshold_map(landcover, options)
     size = settings['window_size']
     kernel = np.ones((size, size), dtype=np.int32)
     valid = np.isfinite(coherence) & (coherence >= 0) & (coherence <= 1)
@@ -716,7 +748,7 @@ def coherence_support_mask(coherence, landcover, options):
         if not center.any():
             continue
         count = convolve(center.astype(np.int32), kernel, mode='constant', cval=0)
-        high = center & (coherence >= options.threshold)
+        high = center & (coherence >= threshold_map)
         high_count = convolve(high.astype(np.int32), kernel, mode='constant', cval=0)
         fraction = np.zeros(coherence.shape, dtype=np.float64)
         np.divide(high_count, count, out=fraction, where=count > 0)
@@ -898,7 +930,8 @@ def metadata(cfg, gcov_paths):
               'GUNW_COHERENCE_LANDCOVER_MASK_USED': False,
               'GUNW_COHERENCE_FILTER_APPLIED': False,
               'GUNW_COHERENCE_RAW_SUPPORT_USED': False}
-    if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask')):
+    from dswx_sar.nisar.backscatter_coherence_contrast import requested
+    if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask') or requested(cfg)):
         return result
     with open(_status_path(cfg)) as stream:
         status = json.load(stream)
@@ -910,13 +943,16 @@ def metadata(cfg, gcov_paths):
     options = cfg.groups.processing.gunw_coherence
     filtering = coherence_filter_options(options)
     mask_settings = landcover_mask_options(options.landcover_mask)
+    bcc_used = bool(sources and any(status.get('bcc_iv', {}).values()))
     raw_support = bool(masking and mask_settings['method'] in RAW_SUPPORT_METHODS)
     filter_applied = bool(
-        (fuzzy or (masking and not raw_support)) and
+        (bcc_used or fuzzy or (masking and not raw_support)) and
         (any(item.get('filtered', False) for item in sources) or
          (sources and status.get('guided_filter_applied', False))))
     result.update({
-        'GUNW_COHERENCE_USED': fuzzy or masking,
+        'GUNW_COHERENCE_USED': fuzzy or masking or bcc_used,
+        'GUNW_COHERENCE_BCC_IV_USED': bcc_used,
+        'IV_METHOD': getattr(cfg.groups.processing.inundated_vegetation, 'method', 'dual_pol_ratio'),
         'GUNW_COHERENCE_FUZZY_USED': fuzzy,
         'GUNW_COHERENCE_LANDCOVER_MASK_USED': masking,
         'GUNW_COHERENCE_SOURCE': options.source,

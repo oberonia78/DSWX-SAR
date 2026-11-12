@@ -928,6 +928,10 @@ def _refine_inundated_vegetation_with_fuzzy_region_growing(
 
 
 def run(cfg):
+    from dswx_sar.nisar import backscatter_coherence_contrast as bcc
+    if bcc.requested(cfg):
+        bcc.run(cfg)
+        return  # Independent detector: never enter ratio/fuzzy refinement.
 
     logger.info('Start inundated vegetation mapping')
 

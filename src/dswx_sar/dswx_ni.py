@@ -86,8 +86,9 @@ def dswx_ni_workflow(cfg):
             # Refinement
             refine_with_bimodality.run(cfg)
 
+            from dswx_sar.nisar.backscatter_coherence_contrast import requested
             if ((inundated_veg_cfg.enabled == 'auto') and
-               len(pol_set) >= 2) or \
+               (len(pol_set) >= 2 or requested(cfg))) or \
                inundated_veg_cfg.enabled is True:
 
                 detect_inundated_vegetation.run(cfg)
