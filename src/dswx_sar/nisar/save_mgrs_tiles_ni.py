@@ -526,7 +526,7 @@ def run(cfg):
     resolution_str = str(int(resolution))
 
     if inundated_vege_cfg.enabled == 'auto':
-        if cross_pol and co_pol:
+        if co_pol and (cross_pol or getattr(inundated_vege_cfg, 'method', 'dual_pol_ratio') == 'backscatter_coherence_contrast'):
             total_inundated_vege_flag = True
         else:
             total_inundated_vege_flag = False

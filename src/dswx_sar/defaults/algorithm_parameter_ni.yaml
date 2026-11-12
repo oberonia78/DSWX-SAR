@@ -82,6 +82,7 @@ runconfig:
                 # Remove water only where coherence >= threshold and
                 # WorldCover is one of these numeric class codes.
                 threshold: 0.12
+                worldcover_thresholds: []
                 worldcover_classes: [60]  # Bare / sparse vegetation
                 # Support methods include the center; pooled combines all selected classes.
                 window_size: 3
@@ -292,6 +293,24 @@ runconfig:
                 surface_ratio: 0.1
 
         inundated_vegetation:
+            # Independent BCC mode bypasses dual-pol ratio and fuzzy refinement.
+            method: dual_pol_ratio
+            backscatter_coherence_contrast:
+                # contrast preserves BCC; rectangle uses raw coherence + dB bounds.
+                detector: contrast
+                # Units of filtered_image, NOT the externally extracted TIFF.
+                input_units: power
+                db_bounds: [-14.359163, -9.006541]
+                coherence_bounds: [0.572295, 0.682170]
+                polarization: auto
+                raw_coherence_limits: [0.104386, 0.882302]
+                filtered_coherence_limits: [0.176475, 0.860684]
+                backscatter_db_limits: [-10.3224, -1.05914]
+                backscatter_min: 0.4
+                contrast_threshold: 0.2
+                raw_coherence_max: 0.6
+                # Optional aligned raster: positive=inside; 0/nodata=outside.
+                aoi_mask_path: ''
             # 'auto' determine the inundated vegetation availability
             # based on available cross-polarizations
             enabled: auto
@@ -367,11 +386,11 @@ runconfig:
                 cross_pol_fuzzy_mode: soft
                 cross_pol_weight: 0.5
                 cross_pol_soft_margin: 2.0
-            water_connectivity:
-                enabled: true
-                dz_max: 1.0
-                max_distance_pixels: 100
-                connectivity: 8
+                water_connectivity:
+                    enabled: true
+                    dz_max: 1.0
+                    max_distance_pixels: 100
+                    connectivity: 8
 
             filter:
                 enabled: True
