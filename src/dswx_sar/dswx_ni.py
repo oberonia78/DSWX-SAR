@@ -33,7 +33,6 @@ def dswx_ni_workflow(cfg):
     nisar_uni_mode = processing_cfg.nisar_uni_mode
     input_list = cfg.groups.input_file_group.input_file_path
     dswx_workflow = processing_cfg.dswx_workflow
-    inundated_veg_cfg = processing_cfg.inundated_vegetation
 
     logger.info("")
     logger.info("Starting DSWx-NI algorithm")
@@ -42,8 +41,14 @@ def dswx_ni_workflow(cfg):
     logger.info(f"Polarization Mode : {pol_mode}")
     logger.info(f"NISAR Processing Mode : {nisar_uni_mode}")
 
+    def run_stage(name, module):
+        start = time.perf_counter()
+        module.run(cfg)
+        logger.info('[DSWX_STAGE] %s pol=%s elapsed=%.3f sec',
+                    name, processing_cfg.polarizations, time.perf_counter() - start)
+
     # Create mosaic burst RTCs
-    mosaic_gcov_frame.run(cfg)
+    run_stage('mosaic_gcov_frame', mosaic_gcov_frame)
 
     if pol_mode == 'MIX_SINGLE_POL':
         proc_pol_set = [DSWX_NI_POL_DICT['SV_POL'],
@@ -68,34 +73,32 @@ def dswx_ni_workflow(cfg):
     for pol_set in proc_pol_set:
         processing_cfg.polarizations = pol_set
         # preprocessing (relocating ancillary data and filtering)
-        pre_processing.run(cfg)
+        run_stage('pre_processing', pre_processing)
 
         # Estimate threshold for given polarizations
-        initial_threshold.run(cfg)
+        run_stage('initial_threshold', initial_threshold)
 
         # Fuzzy value computation
-        fuzzy_value_computation.run(cfg)
+        run_stage('fuzzy_value_computation', fuzzy_value_computation)
 
         # Region Growing
-        region_growing.run(cfg)
+        run_stage('region_growing', region_growing)
 
         if dswx_workflow == 'opera_dswx_ni':
             # Land use map
-            masking_with_ancillary.run(cfg)
+            run_stage('masking_with_ancillary', masking_with_ancillary)
 
             # Refinement
-            refine_with_bimodality.run(cfg)
+            run_stage('refine_with_bimodality', refine_with_bimodality)
 
-            from dswx_sar.nisar.backscatter_coherence_contrast import requested
-            if ((inundated_veg_cfg.enabled == 'auto') and
-               (len(pol_set) >= 2 or requested(cfg))) or \
-               inundated_veg_cfg.enabled is True:
+            from dswx_sar.nisar.backscatter_coherence_contrast import iv_enabled
+            if iv_enabled(cfg, pol_set):
 
-                detect_inundated_vegetation.run(cfg)
+                run_stage('detect_inundated_vegetation', detect_inundated_vegetation)
 
     processing_cfg.polarizations = pol_list
     # save product as mgrs tiles.
-    save_mgrs_tiles_ni.run(cfg)
+    run_stage('save_mgrs_tiles_ni', save_mgrs_tiles_ni)
 
     t_time_end = time.time()
     logger.info(f'total processing time: {t_time_end - t_all} sec')

@@ -231,6 +231,8 @@ runconfig:
                 bm_coefficient: num(min=0, required=False)
                 surface_ratio: num(min=0, required=False)
 
+        clip7_iv: include('clip7_options', required=False)
+
         inundated_vegetation:
             method: enum('dual_pol_ratio', 'backscatter_coherence_contrast', required=False)
             backscatter_coherence_contrast: include('bcc_iv', required=False)
@@ -452,7 +454,7 @@ coherence_bregman:
     eps: num(min=0, required=False)
 
 coherence_adaptive_guided:
-    guide_polarization: enum('HH', 'VV', required=False)
+    guide_polarization: enum('auto', 'HH', 'VV', required=False)
     guide_units: enum('linear', 'db', required=False)
     small_size: int(min=3, required=False)
     large_size: int(min=3, required=False)
@@ -474,7 +476,7 @@ coherence_landcover_mask:
     save_diagnostics: bool(required=False)
 
 coherence_db_weight:
-    backscatter_polarization: enum('HH', 'VV', required=False)
+    backscatter_polarization: enum('auto', 'HH', 'VV', required=False)
     backscatter_anchors: list(num(), min=2, max=2, required=False)
     coherence_thresholds: list(num(min=0, max=1), min=2, max=2, required=False)
     transition_width: num(min=0, required=False)
@@ -497,3 +499,9 @@ bcc_iv:
 worldcover_threshold_override:
     class_code: enum(10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100)
     threshold: num(min=0, max=1)
+
+clip7_options:
+    enabled: bool(required=False)
+    geotiff_dir: str(required=False)
+    db_bounds: list(num(), min=2, max=2, required=False)
+    coherence_bounds: list(num(min=0, max=1), min=2, max=2, required=False)

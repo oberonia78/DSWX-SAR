@@ -16,7 +16,22 @@ METHOD = 'backscatter_coherence_contrast'
 
 def requested(cfg):
     iv = cfg.groups.processing.inundated_vegetation
-    return (iv.enabled is not False and getattr(iv, 'method', 'dual_pol_ratio') == METHOD)
+    return (iv.enabled is not False and getattr(iv, 'method', 'dual_pol_ratio') == METHOD
+            and bool(getattr(cfg.groups.input_file_group, 'gunw_file_path', [])))
+
+
+def iv_enabled(cfg, pols=None):
+    """Use BCC with GUNW, otherwise the original GCOV dual-pol detector."""
+    iv = cfg.groups.processing.inundated_vegetation
+    if iv.enabled is False:
+        return False
+    pols = set(pols if pols is not None else cfg.groups.processing.polarizations)
+    if requested(cfg):
+        return bool(pols & {'HH', 'VV'})
+    dual = {'HH', 'HV'} <= pols or {'VV', 'VH'} <= pols
+    if not dual and iv.enabled is True and getattr(iv, 'method', '') != METHOD:
+        raise ValueError('Dual polarizations are required for dual_pol_ratio IV.')
+    return dual
 
 
 def validate(options):
@@ -98,20 +113,23 @@ def run(cfg):
     scratch = cfg.groups.product_path_group.scratch_path
     pols = list(proc.polarizations) + list(proc.polarimetric_option or [])
     key = '_'.join(pols)
-    pol = options.polarization
-    if pol == 'auto':
-        pol = next((p for p in pols if p in ('HH', 'VV')), None)
-    if pol not in pols or pol not in ('HH', 'VV'):
-        raise ValueError('BCC requires the selected HH or VV filtered power band.')
-    power_path = os.path.join(scratch, f'filtered_image_{key}.tif')
-    gunw_coherence.check_grid(cfg, power_path)
-    gunw_coherence.check_grid(cfg, power_path, raw=True)
-    if not proc.gunw_coherence.filter.enabled:
-        raise ValueError('BCC requires gunw_coherence.filter.enabled: true; rerun mosaic.')
     with open(gunw_coherence._status_path(cfg)) as stream:
         status = json.load(stream)
-    if any(item['polarization'] != pol for item in status['sources']):
-        raise ValueError('BCC power and GUNW polarizations differ; set gunw_coherence.polarization explicitly.')
+    source_pols = {item['polarization'] for item in status['sources']}
+    if options.polarization == 'auto':
+        selected_pols = sorted(source_pols & set(pols) & {'HH', 'VV'})
+        if not selected_pols:
+            raise ValueError('BCC requires co-pol power matching the supplied GUNW.')
+    else:
+        selected_pols = [gunw_coherence.resolve_copol(
+            cfg, options.polarization, available=source_pols & set(pols))]
+    separate = len(source_pols) > 1
+    power_path = os.path.join(scratch, f'filtered_image_{key}.tif')
+    for pol in selected_pols:
+        gunw_coherence.check_grid(cfg, power_path, polarization=pol if separate else None)
+        gunw_coherence.check_grid(cfg, power_path, raw=True, polarization=pol if separate else None)
+    if getattr(options, 'detector', 'contrast') != 'rectangle' and not proc.gunw_coherence.filter.enabled:
+        raise ValueError('BCC contrast requires gunw_coherence.filter.enabled: true; rerun mosaic.')
 
     world_path = os.path.join(scratch, 'interpolated_landcover.tif')
     glad_path = os.path.join(scratch, 'interpolated_glad.tif')
@@ -124,13 +142,15 @@ def run(cfg):
     glad_codes = parse_ranges(iv.target_glad_class) if source == 'GLAD' else []
     with ExitStack() as stack:
         power = stack.enter_context(rasterio.open(power_path))
-        raw = stack.enter_context(rasterio.open(gunw_coherence.raw_raster_path(cfg)))
-        filtered = stack.enter_context(rasterio.open(gunw_coherence.raster_path(cfg)))
+        raw = {pol: stack.enter_context(rasterio.open(
+            gunw_coherence.raw_raster_path(cfg, pol if separate else None))) for pol in selected_pols}
+        filtered = {pol: stack.enter_context(rasterio.open(
+            gunw_coherence.raster_path(cfg, pol if separate else None))) for pol in selected_pols}
         world = stack.enter_context(rasterio.open(world_path))
         glad = stack.enter_context(rasterio.open(glad_path)) if source == 'GLAD' else None
         aoi_path = getattr(options, 'aoi_mask_path', '')
         aoi = stack.enter_context(rasterio.open(aoi_path)) if aoi_path else None
-        for dataset in (raw, filtered, world, glad, aoi):
+        for dataset in (*raw.values(), *filtered.values(), world, glad, aoi):
             if dataset is not None:
                 _same_grid(dataset, power)
         profile = power.profile.copy()
@@ -160,7 +180,15 @@ def run(cfg):
             if aoi is not None:
                 a = read(aoi)
                 target[~(np.isfinite(a) & (a > 0))] = 0
-            candidate, contrast, valid = classify(read(power, pols.index(pol)+1), read(raw), read(filtered), target > 0, options)
+            candidate = np.zeros(target.shape, dtype=bool)
+            valid = np.zeros(target.shape, dtype=bool)
+            contrast = np.full(target.shape, np.nan, dtype=np.float32)
+            for pol in selected_pols:
+                pol_candidate, pol_contrast, pol_valid = classify(
+                    read(power, pols.index(pol)+1), read(raw[pol]), read(filtered[pol]), target > 0, options)
+                candidate |= pol_candidate
+                valid |= pol_valid
+                contrast = np.fmax(contrast, pol_contrast)
             used |= bool((valid & (target > 0)).any())
             target[~valid] = 0
             outputs['temp_inundated_vegetation'].write(candidate.astype('uint8') * 2, 1, window=window)

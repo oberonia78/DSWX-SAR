@@ -231,7 +231,8 @@ def get_pol_rtc_hdf5(input_rtc, freq_group):
 
     with open_h5(input_rtc) as src:
         pols = src[path_pol][()]
-        pols = [pol.decode('utf-8') for pol in pols]
+        pols = [pol.decode('utf-8') if isinstance(pol, bytes) else str(pol)
+                for pol in pols]
 
     return pols
 
@@ -613,6 +614,10 @@ def check_polarizations(pol_list, valid_input_info, DSWX_NI_PROC_POL_DICT):
     pol_mode : str or None
         Polarization mode inferred from sorted_pol_list.
     """
+    if pol_list is None:
+        pol_list = ['auto']
+    elif isinstance(pol_list, str):
+        pol_list = [pol_list]
     if ('dual-pol' in pol_list) or ('auto' in pol_list):
         proc_pol_list = ['VV', 'VH', 'HH', 'HV']
     elif 'co-pol' in pol_list:
@@ -876,7 +881,7 @@ class RunConfig:
 
         # Downstream GCOV readers must never receive a GUNW path. The mixed
         # YAML list is split once, including in standalone workflow commands.
-        gcov_files, gunw_files, _ = split_inputs(input_group['input_file_path'])
+        gcov_files, gunw_files, gunw_matches = split_inputs(input_group['input_file_path'])
         input_group['input_file_path'] = gcov_files
         input_group['gunw_file_path'] = gunw_files
 
@@ -950,9 +955,14 @@ class RunConfig:
 
         # Validate against the retained GCOV frames as well. A GUNW matching
         # only a discarded coarse-resolution frame is not usable evidence.
-        if gunw_files:
-            split_inputs(input_dir_list + gunw_files)
+        retained = set(input_dir_list)
+        gunw_matches = {path: [gcov for gcov in matches if gcov in retained]
+                        for path, matches in gunw_matches.items()}
+        if any(not matches for matches in gunw_matches.values()):
+            raise ValueError('GUNW has no matching GCOV after mosaic_posting_thresh filtering.')
         sns.input_file_group.input_file_path = input_dir_list
+        sns.input_file_group._gunw_matches = gunw_matches
+        sns.input_file_group._gunw_match_paths = tuple(sorted(set(input_dir_list + gunw_files)))
 
         requested_pol = algorithm_cfg[
             'runconfig']['processing']['polarizations']

@@ -3350,21 +3350,23 @@ def run(cfg):
                 #     no_data=-50,
                 #     average_tile=average_threshold_flag)
 
-    # Always export raw threshold candidates, independently of debug_mode.
-    # Output bands follow pol_list; no OR/AND fusion is performed.
-    extent_report = write_initial_water_extent(
-        intensity_path=filt_im_str,
-        threshold_paths=[os.path.join(outputdir, f"intensity_threshold_filled_{p}.tif")
-                         for p in pol_list],
-        output_path=os.path.join(outputdir, "initial_water_extent.tif"),
-        intensity_bands=list(range(1, len(pol_list)+1)),
-        polarizations=pol_list,
-        sar_nodata_path=no_data_geotiff_path,
-        intensity_scale="linear",
-        threshold_pixel_grid=True,
-        lines_per_block=lines_per_block,
-    )
-    logger.info("Initial water extent: %s", extent_report)
+    # This diagnostic reads and writes the full scene for every processing set.
+    if processing_cfg.debug_mode:
+        # Export per-band threshold candidates only for diagnostic runs.
+        # Output bands follow pol_list; no OR/AND fusion is performed.
+        extent_report = write_initial_water_extent(
+            intensity_path=filt_im_str,
+            threshold_paths=[os.path.join(outputdir, f"intensity_threshold_filled_{p}.tif")
+                             for p in pol_list],
+            output_path=os.path.join(outputdir, "initial_water_extent.tif"),
+            intensity_bands=list(range(1, len(pol_list)+1)),
+            polarizations=pol_list,
+            sar_nodata_path=no_data_geotiff_path,
+            intensity_scale="linear",
+            threshold_pixel_grid=True,
+            lines_per_block=lines_per_block,
+        )
+        logger.info("Initial water extent: %s", extent_report)
 
     if processing_cfg.debug_mode:
 

@@ -929,6 +929,9 @@ def _refine_inundated_vegetation_with_fuzzy_region_growing(
 
 def run(cfg):
     from dswx_sar.nisar import backscatter_coherence_contrast as bcc
+    if not bcc.iv_enabled(cfg):
+        logger.info("Skipping IV: no supported co/cross-pol pair or GUNW BCC input.")
+        return
     if bcc.requested(cfg):
         bcc.run(cfg)
         return  # Independent detector: never enter ratio/fuzzy refinement.

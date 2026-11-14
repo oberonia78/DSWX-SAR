@@ -42,7 +42,7 @@ from dswx_sar.common._save_mgrs_tiles import (
     get_bounding_box_from_mgrs_tile_db,
     get_intersecting_mgrs_tiles_list,
     merge_pol_layers)
-from dswx_sar.nisar import gunw_coherence
+from dswx_sar.nisar import clip7_iv, gunw_coherence
 
 logger = logging.getLogger('dswx_sar')
 
@@ -154,7 +154,8 @@ def crop_and_save_mgrs_tile_spacing(
         interpolation_method='nearest',
         num_threads=2,
         warp_memory_limit_mb=512,
-        gdal_cachemax_mb=512):
+        gdal_cachemax_mb=512,
+        tile_addition=None, layer=None):
     """Crop the product along the MGRS tile grid and
     save it as a Cloud-Optimized GeoTIFF (COG).
 
@@ -249,6 +250,8 @@ def crop_and_save_mgrs_tile_spacing(
                 f'{output_tif_file_path}'
             )
 
+        if tile_addition is not None and layer != 'DIAG':
+            tile_addition.apply(layer, out_ds)
         out_ds.FlushCache()
         out_ds = None
 
@@ -525,17 +528,9 @@ def run(cfg):
     platform_str = platform
     resolution_str = str(int(resolution))
 
-    if inundated_vege_cfg.enabled == 'auto':
-        if co_pol and (cross_pol or getattr(inundated_vege_cfg, 'method', 'dual_pol_ratio') == 'backscatter_coherence_contrast'):
-            total_inundated_vege_flag = True
-        else:
-            total_inundated_vege_flag = False
-        # update the IV flag
-        inundated_vege_cfg.enabled = total_inundated_vege_flag
-
-    else:
-        total_inundated_vege_flag = \
-            inundated_vege_cfg.enabled
+    from dswx_sar.nisar.backscatter_coherence_contrast import iv_enabled
+    total_inundated_vege_flag = iv_enabled(cfg)
+    inundated_vege_cfg.enabled = total_inundated_vege_flag
 
     inundated_vege_mosaic_flag = False
     
@@ -1021,7 +1016,7 @@ def run(cfg):
                 'and',
                 coherence_removed,
                 wetland,
-            )
+            ) if coherence_removed is not None else None
         else:
             wetland_nonwater = None
             wetland_water = None
@@ -1192,6 +1187,11 @@ def run(cfg):
 
     if dswx_workflow == 'opera_dswx_ni':
 
+        clip_options = getattr(processing_cfg, 'clip7_iv', None)
+        candidates = {}
+        if clip_options and clip_options.enabled:
+            candidates = clip7_iv.prepare(clip_options, input_list, scratch_dir)
+
         for mgrs_num_id, mgrs_tile_id in enumerate(unique_mgrs_tile_list):
 
             logger.info(f'MGRS tile {mgrs_num_id + 1}: {mgrs_tile_id}')
@@ -1257,19 +1257,21 @@ def run(cfg):
 
                 # Crop full size of BWTR, WTR, CONF file
                 # and save them into MGRS tile grid
-                full_input_file_paths = [full_bwtr_water_set_path,
-                                         full_wtr_water_set_path,
-                                         full_conf_water_set_path,
-                                         full_diag_water_set_path]
-
-                output_file_paths = [output_mgrs_bwtr,
-                                     output_mgrs_wtr,
-                                     output_mgrs_conf,
-                                     output_mgrs_diag]
-
-                for full_input_file_path, output_file_path in zip(
-                    full_input_file_paths, output_file_paths
-                ):
+                addition = None
+                tile_candidates = [candidates[p] for p in overlapped_frame if p in candidates]
+                if tile_candidates:
+                    addition = clip7_iv.TileAddition(tile_candidates)
+                    dswx_metadata_dict.update({
+                        'CLIP7_IV_METHOD': 'A_HH_secondary_median_plus_minus_population_std',
+                        'CLIP7_IV_DB_BOUNDS': str(clip_options.db_bounds),
+                        'CLIP7_IV_COHERENCE_BOUNDS': str(clip_options.coherence_bounds),
+                    })
+                for layer, full_input_file_path, output_file_path in [
+                    ('WTR', full_wtr_water_set_path, output_mgrs_wtr),
+                    ('BWTR', full_bwtr_water_set_path, output_mgrs_bwtr),
+                    ('CONF', full_conf_water_set_path, output_mgrs_conf),
+                    ('DIAG', full_diag_water_set_path, output_mgrs_diag),
+                ]:
                     crop_and_save_mgrs_tile_spacing(
                         source_tif_path=full_input_file_path,
                         output_dir_path=sas_outputdir,
@@ -1281,7 +1283,8 @@ def run(cfg):
                         metadata=dswx_metadata_dict,
                         cog_compression=output_imagery_compression,
                         cog_nbits=output_imagery_nbits,
-                        interpolation_method='nearest')
+                        interpolation_method='nearest',
+                        tile_addition=addition, layer=layer)
 
                 if browse_image_flag:
                     _dswx_sar_util.create_browse_image(

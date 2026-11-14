@@ -113,14 +113,26 @@ def enabled(cfg, stage):
                 getattr(cfg.groups.input_file_group, 'gunw_file_path', []))
 
 
-def raster_path(cfg):
-    return os.path.join(cfg.groups.product_path_group.scratch_path,
-                        'mosaic_gunw_coherence.tif')
+def resolve_copol(cfg, selection='auto', available=None):
+    """Resolve auto deterministically; never silently replace an explicit pol."""
+    if available is None:
+        available = cfg.groups.processing.polarizations
+    available = set(available) & {'HH', 'VV'}
+    if selection == 'auto':
+        selection = next((pol for pol in ('HH', 'VV') if pol in available), None)
+    if selection not in available:
+        raise ValueError(f'No selected co-polarization {selection!r}; available={sorted(available)}')
+    return selection
 
 
-def raw_raster_path(cfg):
+def raster_path(cfg, polarization=None):
     return os.path.join(cfg.groups.product_path_group.scratch_path,
-                        'mosaic_gunw_coherence_raw.tif')
+                        f'mosaic_gunw_coherence{"_" + polarization if polarization else ""}.tif')
+
+
+def raw_raster_path(cfg, polarization=None):
+    return os.path.join(cfg.groups.product_path_group.scratch_path,
+                        f'mosaic_gunw_coherence_raw{"_" + polarization if polarization else ""}.tif')
 
 
 def landcover_mask_options(options):
@@ -153,7 +165,7 @@ def landcover_mask_options(options):
         db_weight = getattr(options, 'db_weight', None)
         result.update(
             backscatter_polarization=getattr(
-                db_weight, 'backscatter_polarization', 'HH'
+                db_weight, 'backscatter_polarization', 'auto'
             ),
             backscatter_anchors=list(getattr(
                 db_weight, 'backscatter_anchors', (-20.0, -8.0)
@@ -181,8 +193,8 @@ def landcover_mask_options(options):
         if not 0 < result['membership_threshold'] <= 1:
             raise ValueError('db_weight.membership_threshold must be within (0, 1].')
 
-        if result['backscatter_polarization'] not in ('HH', 'VV'):
-            raise ValueError('db_weight.backscatter_polarization must be HH or VV.')
+        if result['backscatter_polarization'] not in ('auto', 'HH', 'VV'):
+            raise ValueError('db_weight.backscatter_polarization must be auto, HH or VV.')
 
     return result
 
@@ -206,6 +218,9 @@ def _mosaic_options(cfg):
               ('source', 'frequency', 'polarization', 'resampling', 'mosaic_mode')}
     result['filter'] = coherence_filter_options(options)
     result['raw_support'] = _needs_raw_support(cfg)
+    from dswx_sar.nisar.backscatter_coherence_contrast import requested
+    if requested(cfg):
+        result['bcc_polarization'] = cfg.groups.processing.inundated_vegetation.backscatter_coherence_contrast.polarization
     return result
 
 
@@ -225,7 +240,7 @@ def coherence_filter_options(options):
     if result['method'] == 'adaptive_guided':
         guided = getattr(config, 'adaptive_guided', None)
         result.update(
-            guide_polarization=getattr(guided, 'guide_polarization', 'HH'),
+            guide_polarization=getattr(guided, 'guide_polarization', 'auto'),
             guide_units=getattr(guided, 'guide_units', 'linear'),
             small_size=getattr(guided, 'small_size', 3),
             large_size=getattr(guided, 'large_size', 9),
@@ -247,8 +262,8 @@ def coherence_filter_options(options):
                 raise ValueError(f'{key} must be an integer >= {minimum}.')
         if result['guide_units'] not in ('linear', 'db'):
             raise ValueError('guide_units must be linear or db.')
-        if result['guide_polarization'] not in ('HH', 'VV'):
-            raise ValueError('guide_polarization must be HH or VV.')
+        if result['guide_polarization'] not in ('auto', 'HH', 'VV'):
+            raise ValueError('guide_polarization must be auto, HH or VV.')
         return result
 
     if result['method'] == 'bregman':
@@ -429,7 +444,7 @@ def _dataset_grid(group, pol_group):
 
 
 def extract_coherence(path, output, options, gcov_paths, lines_per_block,
-                      require_native_20m=False):
+                      require_native_20m=False, processing_pols=None):
     """Export a native coherence grid with explicit NaN nodata."""
     gcov_pols = set()
     for gcov in gcov_paths:
@@ -444,9 +459,10 @@ def extract_coherence(path, output, options, gcov_paths, lines_per_block,
         group = src[group_path]
         available = sorted(pol for pol in gcov_pols if
                            f'{pol}/coherenceMagnitude' in group)
+        if processing_pols is not None:
+            available = [pol for pol in available if pol in processing_pols]
         if options.polarization == 'auto':
-            # Prefer co-pol while allowing every supported polarization.
-            available.sort(key=lambda pol: (pol[0] != pol[1], pol))
+            available = [p for p in available if p in ('HH', 'VV')]
             pol = available[0] if available else None
         else:
             pol = options.polarization if options.polarization in available else None
@@ -523,6 +539,8 @@ def _mosaic_native_coherence(native_paths, reference_path, output_path, options,
             total = np.zeros(shape, dtype=np.float32)
             count = np.zeros(shape, dtype=np.uint32)
             for view in views:
+                if (raw or options.mosaic_mode == 'first') and np.all(count):
+                    break
                 values = view.read(1, window=window)
                 valid = np.isfinite(values) & (values >= 0) & (values <= 1)
                 if raw or options.mosaic_mode == 'first':
@@ -542,30 +560,29 @@ def mosaic(cfg, reference_path, guide_path=None):
     """Resample each GUNW directly to the exact GCOV mosaic grid, then merge."""
     from dswx_sar.nisar.backscatter_coherence_contrast import requested
     use_bcc = requested(cfg)
-    if use_bcc and not cfg.groups.input_file_group.gunw_file_path:
-        raise ValueError('BCC IV requires matching GUNW inputs.')
     if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask') or use_bcc):
         return
-    if use_bcc and not cfg.groups.processing.gunw_coherence.filter.enabled:
+    bcc_options = cfg.groups.processing.inundated_vegetation.backscatter_coherence_contrast
+    if use_bcc and bcc_options.detector != 'rectangle' and not cfg.groups.processing.gunw_coherence.filter.enabled:
         raise ValueError('BCC IV requires gunw_coherence.filter.enabled: true.')
     options = cfg.groups.processing.gunw_coherence
     filtering = coherence_filter_options(options)
     guided = filtering.get('method') == 'adaptive_guided'
     guided_applied = False
-    native_options = options
+    native_options = copy.deepcopy(options)
+    if use_bcc and bcc_options.polarization != 'auto':
+        if options.polarization not in ('auto', bcc_options.polarization):
+            raise ValueError('BCC and GUNW polarization selections conflict.')
+        native_options.polarization = bcc_options.polarization
     if guided:
-        native_options = copy.deepcopy(options)
         native_options.filter = SimpleNamespace(enabled=False)
-        if guide_path is None:
-            guide_path = os.path.join(
-                cfg.groups.product_path_group.scratch_path,
-                f'{cfg.groups.processing.mosaic.mosaic_prefix}_{filtering["guide_polarization"]}.tif')
-        guide_path = os.path.abspath(guide_path)
-        if not os.path.isfile(guide_path):
-            raise FileNotFoundError(f'Missing GCOV guide mosaic: {guide_path}')
     scratch = cfg.groups.product_path_group.scratch_path
     inputs = cfg.groups.input_file_group
-    _, _, matches = split_inputs(inputs.input_file_path + inputs.gunw_file_path)
+    paths = tuple(sorted(set(inputs.input_file_path + inputs.gunw_file_path)))
+    if getattr(inputs, '_gunw_match_paths', None) == paths:
+        matches = inputs._gunw_matches
+    else:
+        _, _, matches = split_inputs(paths)
     # An interrupted/failed rerun must not leave previous usage marked valid.
     Path(_status_path(cfg)).unlink(missing_ok=True)
     records = []
@@ -577,7 +594,8 @@ def mosaic(cfg, reference_path, guide_path=None):
             native = os.path.join(temporary, f'{index}.tif')
             pol = extract_coherence(path, native, native_options, matches[path],
                                     cfg.groups.processing.mosaic.read_row_blk_size,
-                                    require_native_20m=use_raw)
+                                    require_native_20m=use_raw,
+                                    processing_pols=cfg.groups.processing.polarizations)
             native_paths.append(native)
             with rasterio.open(native) as src:
                 filtered = src.tags().get('GUNW_COHERENCE_FILTER_APPLIED') == 'True'
@@ -587,21 +605,52 @@ def mosaic(cfg, reference_path, guide_path=None):
                 raw_native = native
                 if coherence_filter_options(native_options)['enabled']:
                     raw_native = os.path.join(temporary, f'{index}_raw.tif')
-                    raw_options = copy.deepcopy(options)
+                    raw_options = copy.deepcopy(native_options)
                     raw_options.filter = SimpleNamespace(enabled=False)
                     extract_coherence(path, raw_native, raw_options, matches[path],
                                       cfg.groups.processing.mosaic.read_row_blk_size,
-                                      require_native_20m=True)
+                                      require_native_20m=True,
+                                      processing_pols=cfg.groups.processing.polarizations)
                 raw_paths.append(raw_native)
         _mosaic_native_coherence(native_paths, reference_path, raster_path(cfg), options,
                                  filtered=any(item['filtered'] for item in records))
         if use_raw:
             _mosaic_native_coherence(raw_paths, reference_path, raw_raster_path(cfg), options, raw=True)
-        if guided:
-            guided_output = os.path.join(temporary, 'guided_coherence.tif')
-            guided_applied = write_guided_coherence(
-                raster_path(cfg), guide_path, guided_output, filtering)
-            os.replace(guided_output, raster_path(cfg))
+        # Keep separate evidence when a collection mixes horizontal/vertical
+        # frames. BCC must never compare HH power against VV coherence.
+        selected_pols = sorted({item['polarization'] for item in records})
+        per_pol_paths = []
+        for pol in selected_pols:
+            separate = len(selected_pols) > 1 and (use_bcc or guided or (
+                enabled(cfg, 'landcover_mask') and
+                landcover_mask_options(options.landcover_mask)['method'] == 'db_weight'))
+            target = raster_path(cfg, pol) if separate else raster_path(cfg)
+            indices = [i for i, item in enumerate(records) if item['polarization'] == pol]
+            if separate:
+                _mosaic_native_coherence(
+                    [native_paths[i] for i in indices], reference_path, target, options,
+                    filtered=any(records[i]['filtered'] for i in indices))
+                if use_raw:
+                    _mosaic_native_coherence(
+                        [raw_paths[i] for i in indices], reference_path,
+                        raw_raster_path(cfg, pol), options, raw=True)
+            if guided:
+                selected_guide = guide_path
+                if selected_guide is None:
+                    selection = filtering['guide_polarization']
+                    guide_pol = resolve_copol(cfg, pol if selection == 'auto' else selection)
+                    selected_guide = os.path.join(
+                        scratch, f'{cfg.groups.processing.mosaic.mosaic_prefix}_{guide_pol}.tif')
+                if not os.path.isfile(selected_guide):
+                    raise FileNotFoundError(f'Missing GCOV guide mosaic: {selected_guide}')
+                guided_output = os.path.join(temporary, f'guided_{pol}.tif')
+                guided_applied |= write_guided_coherence(
+                    target, selected_guide, guided_output, filtering)
+                os.replace(guided_output, target)
+            per_pol_paths.append(target)
+        if guided and len(per_pol_paths) > 1:
+            _mosaic_native_coherence(per_pol_paths, reference_path, raster_path(cfg),
+                                     options, filtered=guided_applied)
     with open(_status_path(cfg), 'w') as stream:
         json.dump({'sources': records, 'options': _mosaic_options(cfg),
                    'guided_filter_applied': guided_applied,
@@ -609,9 +658,9 @@ def mosaic(cfg, reference_path, guide_path=None):
     logger.info('GUNW coherence aligned to GCOV: %s', raster_path(cfg))
 
 
-def check_grid(cfg, reference_path, raw=False):
+def check_grid(cfg, reference_path, raw=False, polarization=None):
     """Catch missing/stale or misaligned intermediate rasters before use."""
-    path = raw_raster_path(cfg) if raw else raster_path(cfg)
+    path = raw_raster_path(cfg, polarization) if raw else raster_path(cfg, polarization)
     with rasterio.open(path) as coherence, rasterio.open(reference_path) as ref:
         if (coherence.shape != ref.shape or coherence.crs != ref.crs or
                 coherence.transform != ref.transform):
@@ -765,7 +814,14 @@ def mask_water(cfg, water_path, landcover_path, record=True):
     settings = landcover_mask_options(options)
     use_db_weight = settings['method'] == 'db_weight'
     use_raw = settings['method'] in RAW_SUPPORT_METHODS
-    check_grid(cfg, water_path, raw=use_raw)
+    separate_pol = None
+    if use_db_weight:
+        with open(_status_path(cfg)) as stream:
+            source_pols = {item['polarization'] for item in json.load(stream)['sources']}
+        selected = resolve_copol(cfg, settings['backscatter_polarization'],
+                                  available=source_pols & set(cfg.groups.processing.polarizations))
+        separate_pol = selected if len(source_pols) > 1 else None
+    check_grid(cfg, water_path, raw=use_raw, polarization=separate_pol)
     used = False
     removed_count = 0
     pad = settings['window_size'] // 2 if use_raw else 0
@@ -782,11 +838,11 @@ def mask_water(cfg, water_path, landcover_path, record=True):
             ExitStack() as stack:
         water = stack.enter_context(rasterio.open(water_path))
         landcover = stack.enter_context(rasterio.open(landcover_path))
-        coherence = stack.enter_context(rasterio.open(raw_raster_path(cfg) if use_raw else raster_path(cfg)))
+        coherence = stack.enter_context(rasterio.open(raw_raster_path(cfg, separate_pol) if use_raw else raster_path(cfg, separate_pol)))
         if use_db_weight:
             scratch = cfg.groups.product_path_group.scratch_path
             prefix = cfg.groups.processing.mosaic.mosaic_prefix
-            pol = settings['backscatter_polarization']
+            pol = selected
             gcov_path = os.path.join(scratch, f'{prefix}_{pol}.tif')
             gcov = stack.enter_context(rasterio.open(gcov_path))
 
@@ -930,7 +986,9 @@ def metadata(cfg, gcov_paths):
               'GUNW_COHERENCE_LANDCOVER_MASK_USED': False,
               'GUNW_COHERENCE_FILTER_APPLIED': False,
               'GUNW_COHERENCE_RAW_SUPPORT_USED': False}
-    from dswx_sar.nisar.backscatter_coherence_contrast import requested
+    from dswx_sar.nisar.backscatter_coherence_contrast import requested, iv_enabled
+    result['IV_METHOD'] = ('backscatter_coherence_contrast' if requested(cfg) else
+                           'dual_pol_ratio') if iv_enabled(cfg) else 'disabled'
     if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask') or requested(cfg)):
         return result
     with open(_status_path(cfg)) as stream:
@@ -952,7 +1010,6 @@ def metadata(cfg, gcov_paths):
     result.update({
         'GUNW_COHERENCE_USED': fuzzy or masking or bcc_used,
         'GUNW_COHERENCE_BCC_IV_USED': bcc_used,
-        'IV_METHOD': getattr(cfg.groups.processing.inundated_vegetation, 'method', 'dual_pol_ratio'),
         'GUNW_COHERENCE_FUZZY_USED': fuzzy,
         'GUNW_COHERENCE_LANDCOVER_MASK_USED': masking,
         'GUNW_COHERENCE_SOURCE': options.source,
@@ -1135,7 +1192,7 @@ def compare_filters(cfg, reference_path):
     variants.append(('adaptive_guided', 'adaptive_guided', 3))
     base_filter = getattr(cfg.groups.processing.gunw_coherence, 'filter', None)
     guided_config = getattr(base_filter, 'adaptive_guided', None)
-    guide_pol = getattr(guided_config, 'guide_polarization', 'HH')
+    guide_pol = resolve_copol(cfg, getattr(guided_config, 'guide_polarization', 'auto'))
     comparison_guide = os.path.abspath(os.path.join(
         cfg.groups.product_path_group.scratch_path,
         f'{cfg.groups.processing.mosaic.mosaic_prefix}_{guide_pol}.tif'))

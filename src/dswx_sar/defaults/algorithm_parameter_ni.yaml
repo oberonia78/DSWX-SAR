@@ -61,7 +61,7 @@ runconfig:
                     eps: 0.0001
 
                 adaptive_guided:
-                    guide_polarization: HH
+                    guide_polarization: auto
                     guide_units: linear
                     small_size: 3
                     large_size: 9
@@ -90,7 +90,7 @@ runconfig:
                 min_valid_fraction: 0.5
                 save_diagnostics: True
                 db_weight:
-                    backscatter_polarization: HH
+                    backscatter_polarization: auto
                     backscatter_anchors: [-20.0, -8.0]
                     coherence_thresholds: [0.4, 0.7]
                     transition_width: 0.1
@@ -291,6 +291,13 @@ runconfig:
                 Bhattacharyya_coefficient: 0.97
                 bm_coefficient: 0.7
                 surface_ratio: 0.1
+
+        # Optional final dry-to-IV addition from native secondary A/HH GeoTIFFs.
+        clip7_iv:
+            enabled: false
+            geotiff_dir: ''
+            db_bounds: [-16.25, -9.0]
+            coherence_bounds: [0.61, 0.68]
 
         inundated_vegetation:
             # Independent BCC mode bypasses dual-pol ratio and fuzzy refinement.

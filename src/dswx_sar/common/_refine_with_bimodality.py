@@ -1078,6 +1078,12 @@ def label_water_with_narrow_connections_split(
     missing = np.flatnonzero(~has_marker)
     missing = missing[missing != 0]
 
+    # Cores are a subset of water, so each marker belongs to exactly one
+    # original component. Once missing components get one fallback marker,
+    # equal marker/component counts mean that watershed cannot split anything.
+    if n_markers - 1 + missing.size == n_original - 1:
+        return n_original, original_labels, original_stats, None
+
     fallback = np.zeros(n_original, dtype=np.int32)
     fallback[missing] = np.arange(
         n_markers,
@@ -1086,8 +1092,8 @@ def label_water_with_narrow_connections_split(
     )
     np.maximum(markers, fallback[original_labels], out=markers)
 
-    # A flat surface gives a spatial partition within the original mask.
-    # No original water pixels are removed.
+    # Preserve global queue ordering whenever a split is required. Removing
+    # other markers or cropping can change equal-priority watershed ties.
     labels = watershed(
         np.zeros(water.shape, dtype=np.uint8),
         markers=markers,
@@ -1484,9 +1490,6 @@ def remove_false_water_bimodality_parallel(water_mask_path,
 
             # computes the connected components labeled image of boolean image
             # and also produces a statistics output for each label
-            # nb_components_water, output_water, stats_water, _ = \
-            #     cv2.connectedComponentsWithStats(water_mask.astype(np.uint8),
-            #                                      connectivity=8)
             nb_components_water, output_water, stats_water, _ = (
                 label_water_with_narrow_connections_split(
                     water_mask,
