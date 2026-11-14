@@ -199,9 +199,17 @@ def landcover_mask_options(options):
     return result
 
 
+def clip7_requested(cfg):
+    options = getattr(cfg.groups.processing, 'clip7_iv', None)
+    coherence = cfg.groups.processing.gunw_coherence
+    return bool(options and options.enabled and cfg.groups.input_file_group.gunw_file_path
+                and 'HH' in cfg.groups.processing.polarizations and coherence.frequency == 'A'
+                and coherence.polarization in ('auto', 'HH'))
+
+
 def _needs_raw_support(cfg):
     from dswx_sar.nisar.backscatter_coherence_contrast import requested
-    if requested(cfg):
+    if requested(cfg) or clip7_requested(cfg):
         return True
     return (enabled(cfg, 'landcover_mask') and landcover_mask_options(
         cfg.groups.processing.gunw_coherence.landcover_mask)['method'] in RAW_SUPPORT_METHODS)
@@ -560,7 +568,7 @@ def mosaic(cfg, reference_path, guide_path=None):
     """Resample each GUNW directly to the exact GCOV mosaic grid, then merge."""
     from dswx_sar.nisar.backscatter_coherence_contrast import requested
     use_bcc = requested(cfg)
-    if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask') or use_bcc):
+    if not (enabled(cfg, 'fuzzy') or enabled(cfg, 'landcover_mask') or use_bcc or clip7_requested(cfg)):
         return
     bcc_options = cfg.groups.processing.inundated_vegetation.backscatter_coherence_contrast
     if use_bcc and bcc_options.detector != 'rectangle' and not cfg.groups.processing.gunw_coherence.filter.enabled:
@@ -621,7 +629,7 @@ def mosaic(cfg, reference_path, guide_path=None):
         selected_pols = sorted({item['polarization'] for item in records})
         per_pol_paths = []
         for pol in selected_pols:
-            separate = len(selected_pols) > 1 and (use_bcc or guided or (
+            separate = len(selected_pols) > 1 and (use_bcc or guided or clip7_requested(cfg) or (
                 enabled(cfg, 'landcover_mask') and
                 landcover_mask_options(options.landcover_mask)['method'] == 'db_weight'))
             target = raster_path(cfg, pol) if separate else raster_path(cfg)

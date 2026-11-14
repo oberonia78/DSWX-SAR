@@ -502,6 +502,5 @@ worldcover_threshold_override:
 
 clip7_options:
     enabled: bool(required=False)
-    geotiff_dir: str(required=False)
     db_bounds: list(num(), min=2, max=2, required=False)
     coherence_bounds: list(num(min=0, max=1), min=2, max=2, required=False)

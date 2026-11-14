@@ -344,3 +344,41 @@ def test_mosaic_first_and_mean_numerical_contract(tmp_path, mode, raw):
     expected[:, :2] = .8
     with rasterio.open(out) as src:
         np.testing.assert_allclose(src.read(1), expected, atol=1e-6)
+
+
+def test_clip7_from_workflow_mosaics(tmp_path):
+    from dswx_sar.nisar import clip7_iv
+
+    cfg = config(tmp_path, ('HH',), method='dual_pol_ratio')
+    proc = cfg.groups.processing
+    proc.clip7_iv.enabled = True
+    proc.gunw_coherence.fuzzy.enabled = False
+    proc.gunw_coherence.landcover_mask.enabled = False
+    gcov = h5_input(tmp_path / 'gcov.h5', 'GCOV', ('HH',))
+    gunw = h5_input(tmp_path / 'gunw.h5', 'GUNW', ('HH',))
+    cfg.groups.input_file_group.input_file_path = [gcov]
+    cfg.groups.input_file_group.gunw_file_path = [gunw]
+    with h5py.File(gunw, 'r+') as f:
+        ident = f[gc.IDENTIFICATION]
+        for suffix in ('StartTime', 'EndTime'):
+            key = 'referenceZeroDoppler' + suffix
+            ident[key][()] = ident[key][()].replace(b'2026-01-01', b'2025-12-20')
+        f[gc.GRIDS + '/frequencyA/wrappedInterferogram/HH/coherenceMagnitude'][:] = .64
+
+    power = raster(tmp_path / f'{proc.mosaic.mosaic_prefix}_HH.tif',
+                   np.full((8, 8), .0625, np.float32))
+    gc.mosaic(cfg, power)
+    candidate = clip7_iv.prepare(cfg)
+    with rasterio.open(candidate) as src:
+        result = src.read(1)
+    np.testing.assert_array_equal(result[3:5, 3:5], np.ones((2, 2)))
+    assert (result == 255).sum() == 60
+
+    # Reference-only jobs and GCOV-only jobs keep the original WTR.
+    with h5py.File(gcov, 'r+') as f:
+        ident = f[gc.IDENTIFICATION]
+        for key in ('zeroDopplerStartTime', 'zeroDopplerEndTime'):
+            ident[key][()] = ident[key][()].replace(b'2026-01-01', b'2025-12-20')
+    assert clip7_iv.prepare(cfg) is None
+    cfg.groups.input_file_group.gunw_file_path = []
+    assert clip7_iv.prepare(cfg) is None

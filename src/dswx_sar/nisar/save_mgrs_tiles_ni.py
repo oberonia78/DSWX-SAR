@@ -1188,9 +1188,7 @@ def run(cfg):
     if dswx_workflow == 'opera_dswx_ni':
 
         clip_options = getattr(processing_cfg, 'clip7_iv', None)
-        candidates = {}
-        if clip_options and clip_options.enabled:
-            candidates = clip7_iv.prepare(clip_options, input_list, scratch_dir)
+        candidate = clip7_iv.prepare(cfg) if clip_options and clip_options.enabled else None
 
         for mgrs_num_id, mgrs_tile_id in enumerate(unique_mgrs_tile_list):
 
@@ -1258,9 +1256,8 @@ def run(cfg):
                 # Crop full size of BWTR, WTR, CONF file
                 # and save them into MGRS tile grid
                 addition = None
-                tile_candidates = [candidates[p] for p in overlapped_frame if p in candidates]
-                if tile_candidates:
-                    addition = clip7_iv.TileAddition(tile_candidates)
+                if candidate is not None:
+                    addition = clip7_iv.TileAddition([candidate])
                     dswx_metadata_dict.update({
                         'CLIP7_IV_METHOD': 'A_HH_secondary_median_plus_minus_population_std',
                         'CLIP7_IV_DB_BOUNDS': str(clip_options.db_bounds),
